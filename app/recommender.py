@@ -6,10 +6,10 @@ import logging
 import json
 from typing import List, Dict, Any
 import os
-from openai import OpenAI
 import time
 import random
 import requests
+from app.llm_service import LLMService
 
 logger = logging.getLogger(__name__)
 
@@ -23,10 +23,8 @@ class Recommender:
         Args:
             openai_api_key: OpenAI API key
         """
-        # Set API key as environment variable which is the recommended approach
-        os.environ["OPENAI_API_KEY"] = openai_api_key
-        # Initialize client without any parameters
-        self.client = OpenAI()
+        # Initialize the LLM service
+        self.llm_service = LLMService(api_key=openai_api_key)
     
     def get_recommendation_candidates(self, user_profile: Dict[str, Any], watched_shows: List[Dict[str, Any]], max_candidates: int = 100) -> List[Dict[str, Any]]:
         """
@@ -162,49 +160,32 @@ class Recommender:
         
         if not genre_ids:
             return []
+         
+        # Get shows for each genre (up to 3 genres to avoid too many API calls)
+        for genre_id in genre_ids[:3]:
+            params = {
+                "with_genres": genre_id,
+                "sort_by": "popularity.desc",
+                "page": 1,
+                "language": "en-US"
+            }
             
-        try:
-            # Make API request to TMDB
-            for genre_id in genre_ids[:3]:  # Limit to 3 genres to avoid too many API calls
-                params = {
-                    "api_key": os.getenv("TMDB_API_KEY"),
-                    "with_genres": genre_id,
-                    "sort_by": "popularity.desc",
-                    "page": 1,
-                    "language": "en-US"
-                }
-                
-                response = requests.get(
-                    "https://api.themoviedb.org/3/discover/tv",
-                    params=params
-                )
-                
-                if response.status_code == 200:
-                    data = response.json()
-                    results = data.get("results", [])
-                    
-                    for show in results:
-                        # Skip shows the user has already watched
-                        if show.get("id") in watched_ids:
-                            continue
-                            
-                        # Process the show data
-                        processed_show = self._process_tmdb_show(show)
-                        discovered_shows.append(processed_show)
-                        
-                        # Break if we have enough shows
-                        if len(discovered_shows) >= limit:
-                            break
-                
-                # Add delay to avoid rate limiting
-                time.sleep(0.25)
-                
-                # Break if we have enough shows
-                if len(discovered_shows) >= limit:
-                    break
-                    
-        except Exception as e:
-            logger.error(f"Error discovering shows by genres: {e}")
+            # Make the API request
+            genre_shows = self._make_tmdb_request(
+                endpoint="https://api.themoviedb.org/3/discover/tv",
+                params=params,
+                watched_ids=watched_ids,
+                limit=limit - len(discovered_shows)
+            )
+            
+            discovered_shows.extend(genre_shows)
+            
+            # Add delay to avoid rate limiting
+            time.sleep(0.25)
+            
+            # Break if we have enough shows
+            if len(discovered_shows) >= limit:
+                break
         
         return discovered_shows[:limit]
     
@@ -222,47 +203,24 @@ class Recommender:
         """
         logger.info(f"Discovering shows with params: {params}")
         
-        discovered_shows = []
+        # Prepare API parameters
+        api_params = {
+            "sort_by": "popularity.desc",
+            "page": 1,
+            "language": "en-US"
+        }
         
-        try:
-            # Make API request to TMDB
-            api_params = {
-                "api_key": os.getenv("TMDB_API_KEY"),
-                "sort_by": "popularity.desc",
-                "page": 1,
-                "language": "en-US"
-            }
-            
-            # Add custom params
-            for key, value in params.items():
-                api_params[key] = value
-            
-            response = requests.get(
-                "https://api.themoviedb.org/3/discover/tv",
-                params=api_params
-            )
-            
-            if response.status_code == 200:
-                data = response.json()
-                results = data.get("results", [])
-                
-                for show in results:
-                    # Skip shows the user has already watched
-                    if show.get("id") in watched_ids:
-                        continue
-                        
-                    # Process the show data
-                    processed_show = self._process_tmdb_show(show)
-                    discovered_shows.append(processed_show)
-                    
-                    # Break if we have enough shows
-                    if len(discovered_shows) >= limit:
-                        break
-                        
-        except Exception as e:
-            logger.error(f"Error discovering shows with params: {e}")
+        # Add custom params
+        for key, value in params.items():
+            api_params[key] = value
         
-        return discovered_shows[:limit]
+        # Make the API request
+        return self._make_tmdb_request(
+            endpoint="https://api.themoviedb.org/3/discover/tv",
+            params=api_params,
+            watched_ids=watched_ids,
+            limit=limit
+        )
     
     def _get_similar_shows(self, tmdb_id: int, watched_ids: set, limit: int = 10) -> List[Dict[str, Any]]:
         """
@@ -278,42 +236,19 @@ class Recommender:
         """
         logger.info(f"Getting shows similar to TMDB ID: {tmdb_id}")
         
-        similar_shows = []
+        # Prepare API parameters
+        params = {
+            "language": "en-US",
+            "page": 1
+        }
         
-        try:
-            # Make API request to TMDB
-            params = {
-                "api_key": os.getenv("TMDB_API_KEY"),
-                "language": "en-US",
-                "page": 1
-            }
-            
-            response = requests.get(
-                f"https://api.themoviedb.org/3/tv/{tmdb_id}/similar",
-                params=params
-            )
-            
-            if response.status_code == 200:
-                data = response.json()
-                results = data.get("results", [])
-                
-                for show in results:
-                    # Skip shows the user has already watched
-                    if show.get("id") in watched_ids:
-                        continue
-                        
-                    # Process the show data
-                    processed_show = self._process_tmdb_show(show)
-                    similar_shows.append(processed_show)
-                    
-                    # Break if we have enough shows
-                    if len(similar_shows) >= limit:
-                        break
-                        
-        except Exception as e:
-            logger.error(f"Error getting similar shows: {e}")
-        
-        return similar_shows[:limit]
+        # Make the API request
+        return self._make_tmdb_request(
+            endpoint=f"https://api.themoviedb.org/3/tv/{tmdb_id}/similar",
+            params=params,
+            watched_ids=watched_ids,
+            limit=limit
+        )
     
     def _get_trending_shows(self, watched_ids: set, limit: int = 30) -> List[Dict[str, Any]]:
         """
@@ -328,41 +263,18 @@ class Recommender:
         """
         logger.info(f"Getting trending TV shows")
         
-        trending_shows = []
+        # Prepare API parameters
+        params = {
+            "language": "en-US"
+        }
         
-        try:
-            # Make API request to TMDB
-            params = {
-                "api_key": os.getenv("TMDB_API_KEY"),
-                "language": "en-US"
-            }
-            
-            response = requests.get(
-                "https://api.themoviedb.org/3/trending/tv/week",
-                params=params
-            )
-            
-            if response.status_code == 200:
-                data = response.json()
-                results = data.get("results", [])
-                
-                for show in results:
-                    # Skip shows the user has already watched
-                    if show.get("id") in watched_ids:
-                        continue
-                        
-                    # Process the show data
-                    processed_show = self._process_tmdb_show(show)
-                    trending_shows.append(processed_show)
-                    
-                    # Break if we have enough shows
-                    if len(trending_shows) >= limit:
-                        break
-                        
-        except Exception as e:
-            logger.error(f"Error getting trending shows: {e}")
-        
-        return trending_shows[:limit]
+        # Make the API request
+        return self._make_tmdb_request(
+            endpoint="https://api.themoviedb.org/3/trending/tv/week",
+            params=params,
+            watched_ids=watched_ids,
+            limit=limit
+        )
     
     def _process_tmdb_show(self, show: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -423,6 +335,57 @@ class Recommender:
             processed_show["backdrop_url"] = f"https://image.tmdb.org/t/p/w1280{backdrop_path}"
         
         return processed_show
+    
+    def _make_tmdb_request(self, endpoint: str, params: Dict[str, Any], watched_ids: set = None, limit: int = 0) -> List[Dict[str, Any]]:
+        """
+        Make a request to the TMDB API and process results.
+        
+        Args:
+            endpoint: TMDB API endpoint to call
+            params: Query parameters for the API request
+            watched_ids: Set of show IDs to exclude from results
+            limit: Maximum number of results to return (0 for no limit)
+            
+        Returns:
+            List of processed show data
+        """
+        results = []
+        
+        try:
+            # Ensure API key is in parameters
+            if "api_key" not in params:
+                params["api_key"] = os.getenv("TMDB_API_KEY")
+            
+            # Make the API request
+            response = requests.get(endpoint, params=params)
+            
+            if response.status_code == 200:
+                data = response.json()
+                show_results = data.get("results", [])
+                
+                for show in show_results:
+                    # Skip shows the user has already watched if watched_ids provided
+                    if watched_ids is not None and show.get("id") in watched_ids:
+                        continue
+                        
+                    # Process the show data
+                    processed_show = self._process_tmdb_show(show)
+                    results.append(processed_show)
+                    
+                    # Break if we have reached the limit
+                    if limit > 0 and len(results) >= limit:
+                        break
+            else:
+                logger.error(f"TMDB API request failed with status code {response.status_code}: {response.text}")
+                
+        except Exception as e:
+            logger.error(f"Error making TMDB API request to {endpoint}: {e}")
+        
+        # Apply limit if specified
+        if limit > 0:
+            return results[:limit]
+        
+        return results
     
     def _remove_duplicate_candidates(self, candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
@@ -724,36 +687,18 @@ Your response should be in this JSON format:
 Only provide the JSON output, nothing else. Ensure it's valid JSON.
 """
         
-        # Log the prompt
-        logger.info("OpenAI Prompt:")
-        logger.info(prompt)
-        
-        # Print the prompt to the console if enabled
-        # if os.environ.get("SHOW_OPENAI_PROMPT", "0") == "1":
-        #     print("\n=== OPENAI PROMPT ===\n")
-        #     print(prompt)
-        #     print("\n=== END PROMPT ===\n")
+        # System message for the recommendation prompt
+        system_message = "You are a TV show recommendation expert. Focus on providing balanced, unbiased recommendations by considering the user's entire taste profile holistically. Avoid common anchoring biases like overweighting recent shows, most frequent genres, or most prominent keywords. Pay special attention to the user's diverse taste clusters and consider them with equal importance. Aim to provide recommendations that both match existing preferences and thoughtfully expand their horizons with carefully selected new experiences."
         
         try:
-            # Make the OpenAI API call using the new OpenAI API syntax
-            logger.info("Calling OpenAI API with configuration:")
-            logger.info(f"Model: gpt-4o-mini, Temperature: 0.7, Max tokens: 2000")
-            
-            response = self.client.chat.completions.create(
-                model="gpt-4o-mini",  # Using GPT-4o mini for faster, more efficient recommendations
-                messages=[
-                    {"role": "system", "content": "You are a TV show recommendation expert. Focus on providing balanced, unbiased recommendations by considering the user's entire taste profile holistically. Avoid common anchoring biases like overweighting recent shows, most frequent genres, or most prominent keywords. Pay special attention to the user's diverse taste clusters and consider them with equal importance. Aim to provide recommendations that both match existing preferences and thoughtfully expand their horizons with carefully selected new experiences."},
-                    {"role": "user", "content": prompt}
-                ],
+            # Use the LLM service to generate recommendations
+            return self.llm_service.generate_text(
+                prompt=prompt,
+                system_message=system_message,
+                model="gpt-4o-mini",
                 temperature=0.7,
                 max_tokens=2000
             )
-            
-            # Log successful response
-            logger.info("OpenAI API call completed successfully")
-            
-            # Extract and return the response content - new API returns content differently
-            return response.choices[0].message.content.strip()
             
         except Exception as e:
             logger.error(f"Error generating recommendations with OpenAI: {e}")
@@ -775,8 +720,8 @@ Only provide the JSON output, nothing else. Ensure it's valid JSON.
             Processed recommendations
         """
         try:
-            # Parse the JSON response
-            recommendations_json = json.loads(recommendations_data)
+            # Parse the JSON response using the service's JSON parsing function
+            recommendations_json = self.llm_service._parse_json(recommendations_data)
             
             # Map of TMDB IDs to candidate show data
             candidates_map = {str(show.get('tmdb_id')): show for show in candidates if show.get('tmdb_id')}
@@ -803,7 +748,7 @@ Only provide the JSON output, nothing else. Ensure it's valid JSON.
             
             return recommendations_json
             
-        except json.JSONDecodeError as e:
+        except Exception as e:
             logger.error(f"Error parsing OpenAI recommendations: {e}")
             logger.error(f"Raw data: {recommendations_data}")
             

@@ -1,17 +1,16 @@
 """
-Module for building a user taste profile from watch history.
+Module for building user profiles for TV show recommendations.
 """
-
 import logging
 import json
 import os
-from typing import List, Dict, Any, Counter
-from collections import Counter
-import random
-from openai import OpenAI
-import datetime
+import collections
+import tqdm
 import re
-
+from typing import Dict, List, Any, Optional
+from statistics import mean
+from app.llm_service import LLMService
+from app.utils import load_from_json, save_to_json
 from .affinity_scorer import AffinityScorer
 
 logger = logging.getLogger(__name__)
@@ -19,20 +18,22 @@ logger = logging.getLogger(__name__)
 class ProfileBuilder:
     """Class to build a user taste profile from watched shows."""
     
-    def __init__(self, openai_api_key=None):
+    def __init__(self, openai_api_key=None, watched_shows=None, kmeans=None):
         """
         Initialize the ProfileBuilder.
         
         Args:
-            openai_api_key: Optional OpenAI API key for clustering. If not provided,
+            openai_api_key: OpenAI API key. If not provided,
                            will use the OPENAI_API_KEY environment variable.
+            watched_shows: List of shows watched by the user. Can be set later.
+            kmeans: Optional KMeans model for clustering.
         """
-        # If openai_api_key is provided, use it. Otherwise, rely on environment variable
-        if openai_api_key:
-            os.environ["OPENAI_API_KEY"] = openai_api_key
+        # Initialize the LLM service
+        self.llm_service = LLMService(api_key=openai_api_key)
         
-        # Initialize the OpenAI client
-        self.client = OpenAI()
+        # Initialize other properties
+        self.watched_shows = watched_shows or []
+        self.kmeans = kmeans
         
         # Initialize the AffinityScorer
         self.affinity_scorer = AffinityScorer()
@@ -80,9 +81,7 @@ class ProfileBuilder:
                 affinity_data.sort(key=lambda x: x.get('affinity_score', 0), reverse=True)
                 
                 # Save to file
-                os.makedirs('data', exist_ok=True)
-                with open('data/affinity_scores.json', 'w', encoding='utf-8') as f:
-                    json.dump(affinity_data, f, indent=2, ensure_ascii=False)
+                save_to_json(affinity_data, 'data/affinity_scores.json')
                     
                 logger.info(f"Saved affinity data for {len(affinity_data)} shows to data/affinity_scores.json")
                 
@@ -143,11 +142,11 @@ class ProfileBuilder:
                     logger.info(f"Score ranges: {score_ranges}")
         
         # Initialize counters for various attributes
-        genre_counter = Counter()
-        network_counter = Counter()
-        keyword_counter = Counter()
-        creator_counter = Counter()
-        actor_counter = Counter()
+        genre_counter = collections.Counter()
+        network_counter = collections.Counter()
+        keyword_counter = collections.Counter()
+        creator_counter = collections.Counter()
+        actor_counter = collections.Counter()
         
         # Initialize lists for top-rated and recently watched shows
         top_rated_shows = []
@@ -282,7 +281,7 @@ class ProfileBuilder:
         
         # Use OpenAI to identify clusters
         try:
-            clusters = self._generate_clusters_with_llm(shows_data)
+            clusters = self._cluster_shows(min_shows_per_cluster=3, max_clusters=5, reclustering_allowed=True)
             
             # If successful, remove the failure marker if it exists
             if os.path.exists(failure_file):
@@ -357,150 +356,126 @@ class ProfileBuilder:
         
         return prepared_shows
     
-    def _generate_clusters_with_llm(self, shows_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _cluster_shows(self, min_shows_per_cluster: int = 3, max_clusters: int = 5,
+                        reclustering_allowed: bool = True) -> Dict[str, Any]:
         """
-        Use the OpenAI LLM to generate taste clusters from show data.
+        Cluster shows based on their descriptive text.
         
         Args:
-            shows_data: Prepared show data for clustering
+            min_shows_per_cluster: Minimum shows per cluster
+            max_clusters: Maximum number of clusters
+            reclustering_allowed: Whether reclustering is allowed
             
         Returns:
-            List of taste clusters
+            Dictionary with clustering results
         """
-        # Convert shows data to a formatted string for the prompt
-        shows_text = self._format_shows_for_prompt(shows_data)
+        # Try to get cached clusters first for faster loading
+        cached_results = self._get_cached_clusters(min_shows_per_cluster, max_clusters)
+        if cached_results:
+            return cached_results
         
-        # Create the prompt for the LLM
+        # Prepare data for clustering with OpenAI
+        watched_data = []
+        for show in self.watched_shows:
+            watched_data.append({
+                "id": show.get("tmdb_id"),
+                "title": show.get("name"),
+                "overview": show.get("overview", ""),
+                "genres": ", ".join(genre["name"] for genre in show.get("genres", [])),
+                "first_air_date": show.get("first_air_date", ""),
+                "vote_average": show.get("vote_average", 0),
+                "watched_ratio": show.get("watched_ratio", 0),
+                "rating": show.get("rating", 0)
+            })
+        
+        # Construct the prompt for OpenAI
         prompt = f"""
-You are an expert in analyzing media consumption patterns and clustering similar content.
+I need to analyze a user's TV watching history to identify their main taste clusters. Each cluster should represent a distinct preference pattern.
 
-Below is a list of TV shows that a user has watched, including affinity scores that indicate how much they liked each show:
+# WATCHED SHOWS DATA
+```
+{json.dumps(watched_data, indent=2)}
+```
 
-{shows_text}
+Analyze this data and identify {max_clusters} distinct taste clusters (or fewer if appropriate). Each cluster should represent a coherent group of shows that share important characteristics which might explain why the user enjoys them.
 
-ABOUT THE AFFINITY SCORES:
-- Affinity scores range from -5 to 10, with higher values indicating stronger preference
-- Shows labeled as "High Preference" (scores ≥7) should be weighted more heavily in your analysis
-- Shows labeled as "Favorites" were either highly rated by the user or watched in a way that indicates strong enjoyment
-- Shows labeled as "Binged" were watched in rapid succession, suggesting high engagement
-- Shows labeled as "Dropped" were abandoned before completion, suggesting disinterest
-- Shows labeled as "Completed" were watched to completion, suggesting satisfaction
-
-Based on this complete watch history, identify 5-10 distinct taste clusters or viewing preferences. When analyzing this data:
-- Prioritize shows with higher affinity scores when identifying patterns
-- Shows with similar affinity scores but different genres may indicate multi-faceted taste preferences
-- Consider the entire dataset holistically, but give more weight to shows the user demonstrably enjoyed
-- Look for natural groupings based on genres, themes, tones, content styles, AND viewing behavior
-- Focus on identifying distinct viewing preferences that represent different aspects of the user's taste
-- Each cluster should be clearly differentiated from the others
-- Do not copy or reuse any phrases from this prompt. Create original, specific labels that reflect the data.
-- Be creative in naming clusters — think like a cultural critic or journalist writing about a viewer's unique taste.
+Consider these factors when creating clusters:
+1. Genre combinations and sub-genres
+2. Themes, tones, and narrative styles
+3. Character types and relationships
+4. Time periods and settings
+5. Creative teams (if patterns exist)
+6. Viewing patterns (shows with high watch completion vs. partial viewing)
+7. User ratings (if available)
 
 For each cluster:
-1. Provide a short descriptive name (use your own words based on the content — avoid using generic TV genre phrases)
-2. List the key genres that define this cluster
-3. List 5-8 keywords or themes common in this cluster
-4. Include 3-5 example shows from the user's watch history that best represent this cluster
-5. Write a brief 1-2 sentence description explaining what characterizes this taste profile
+1. Give it a descriptive name that captures its essence (e.g. "Character-Driven Sci-Fi Drama" rather than just "Sci-Fi")
+2. List the show IDs that belong to this cluster
+3. Provide a detailed explanation of what unifies these shows, focusing on specific elements likely to appeal to the user
+4. Describe the viewing experience or emotional satisfaction this cluster provides
 
-Your response should be in this JSON format:
+Rules:
+- Each show MUST be assigned to exactly ONE cluster
+- Each cluster MUST contain at least {min_shows_per_cluster} shows
+- Create only as many clusters as needed (maximum {max_clusters})
+- Strongly favor clusters with at least {min_shows_per_cluster} shows
+- Name clusters based on content patterns, not viewing behaviors
+- Avoid clusters that solely reflect networks, platforms or release years
+- Focus on WHY the user enjoys these shows, not just their surface-level categorization
+
+Your response should be valid JSON in this exact format:
 {{
   "clusters": [
     {{
-      "name": "Cluster name",
-      "genres": ["Genre1", "Genre2", ...],
-      "keywords": ["Keyword1", "Keyword2", ...],
-      "example_shows": ["Show1", "Show2", ...],
-      "description": "Brief description of this taste cluster"
+      "name": "Descriptive Cluster Name",
+      "show_ids": [123, 456, 789],
+      "explanation": "Detailed explanation of what unifies these shows...",
+      "viewing_experience": "Description of the viewing experience or emotional satisfaction..."
     }},
-    // Additional clusters...
-  ]
+    ...more clusters...
+  ],
+  "profile_summary": "An overall analysis of this viewer's TV watching preferences, viewing patterns, and taste profile based on all the clusters together. Highlight dominant preferences, viewing balance, and any insights about their TV watching identity..."
 }}
 
-Only provide the JSON output, nothing else. Ensure it's valid JSON without any comments or trailing commas.
-"""
+Only return the JSON, nothing else."""
+
+        # System message for the clustering prompt
+        system_message = "You are a TV show analysis expert. Your task is to identify meaningful patterns in a user's TV viewing history. Focus on extracting distinct taste clusters that represent different aspects of their preferences. Each cluster should capture a unique facet of their viewing identity with thoughtful analysis."
         
         try:
-            logger.info("Calling OpenAI to generate taste clusters")
-            
-            # Make the API call
-            response = self.client.chat.completions.create(
-                model="gpt-4o-mini",  # Use GPT-4o instead of gpt-4o-mini for better JSON output
-                messages=[
-                    {"role": "system", "content": "You are an expert in analyzing media consumption patterns and identifying taste clusters. You will respond with valid JSON only."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.7,
-                max_tokens=2000
+            # Use LLM service to generate taste clusters
+            clustering_response = self.llm_service.generate_json(
+                prompt=prompt,
+                system_message=system_message,
+                fallback_response={"clusters": [], "profile_summary": "Unable to generate profile"}
             )
             
-            # Extract the response content
-            result = response.choices[0].message.content.strip()
+            # Check if we have valid clusters
+            clusters = clustering_response.get('clusters', [])
+            if not clusters:
+                logger.error("OpenAI did not return any clusters")
+                return {"clusters": [], "profile_summary": "Unable to generate profile"}
             
-            # Debug: print the raw response to console for debugging
-            print("\n=== RAW OPENAI RESPONSE FOR TASTE CLUSTERS ===")
-            print(result)
-            print("=== END RAW RESPONSE ===\n")
+            # Filter out clusters with too few shows
+            valid_clusters = [c for c in clusters if len(c.get('show_ids', [])) >= min_shows_per_cluster]
             
-            # Log the raw response for debugging
-            logger.info(f"Raw OpenAI response length: {len(result)}")
-            if len(result) < 50:  # If it's suspiciously short, log the whole thing
-                logger.warning(f"Short response from OpenAI: '{result}'")
-            else:
-                logger.info(f"First 100 chars: {result[:100]}...")
+            # If we don't have enough valid clusters and reclustering is allowed, try again with fewer minimums
+            if len(valid_clusters) < 2 and reclustering_allowed:
+                logger.warning(f"Only found {len(valid_clusters)} valid clusters. Retrying with lower minimum...")
+                return self._cluster_shows(min_shows_per_cluster=2, max_clusters=max_clusters, reclustering_allowed=False)
             
-            # Parse the JSON response
-            try:
-                # Sometimes OpenAI returns results with markdown code blocks, try to extract JSON
-                if result.startswith("```json"):
-                    result = result.split("```json", 1)[1]
-                    if "```" in result:
-                        result = result.split("```", 1)[0]
-                elif result.startswith("```"):
-                    result = result.split("```", 1)[1]
-                    if "```" in result:
-                        result = result.split("```", 1)[0]
-                
-                # Some basic cleanup
-                result = result.strip()
-                
-                # Additional cleaning to fix common JSON issues
-                # Try to fix trailing commas which are invalid in JSON but common in JavaScript
-                result = result.replace(",\n}", "\n}")
-                result = result.replace(",\n  }", "\n  }")
-                result = result.replace(",\n    }", "\n    }")
-                result = result.replace(",\n]", "\n]")
-                result = result.replace(",\n  ]", "\n  ]")
-                result = result.replace(",\n    ]", "\n    ]")
-                
-                # Fix missing quote marks around keys
-                result = re.sub(r'([{,]\s*)(\w+)(\s*:)', r'\1"\2"\3', result)
-                
-                # Fix single quotes to double quotes if needed
-                if "'" in result and '"' not in result:
-                    result = result.replace("'", '"')
-                
-                # Try to parse JSON
-                clusters_data = json.loads(result)
-                clusters = clusters_data.get('clusters', [])
-                
-                # Check if we got a valid response
-                if not clusters:
-                    logger.warning("OpenAI returned an empty clusters list or missing 'clusters' key")
-                    return self._generate_fallback_clusters(shows_data)
-                
-                return clusters
-                
-            except json.JSONDecodeError as e:
-                logger.error(f"Error parsing clusters JSON from OpenAI: {e}")
-                logger.error(f"Raw response causing JSON error: {result}")
-                # If JSON parsing fails, use fallback
-                return self._generate_fallback_clusters(shows_data)
+            # Save clusters to cache for future use
+            result = {
+                "clusters": valid_clusters,
+                "profile_summary": clustering_response.get('profile_summary', "")
+            }
+            self._cache_clusters(result, min_shows_per_cluster, max_clusters)
+            
+            return result
             
         except Exception as e:
-            logger.error(f"Error generating taste clusters with OpenAI: {e}")
-            # If an error occurs, use fallback
-            return self._generate_fallback_clusters(shows_data)
+            logger.error(f"Error clustering shows with OpenAI: {e}")
+            return {"clusters": [], "profile_summary": f"Error generating profile: {str(e)}"}
     
     def _generate_fallback_clusters(self, shows_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
@@ -515,7 +490,7 @@ Only provide the JSON output, nothing else. Ensure it's valid JSON without any c
         logger.info("Using fallback clustering method")
         
         # Create a simplified genre-based clustering
-        genre_counts = Counter()
+        genre_counts = collections.Counter()
         shows_by_genre = {}
         
         # Count genres and group shows by genre
@@ -645,7 +620,7 @@ Only provide the JSON output, nothing else. Ensure it's valid JSON without any c
         logger.info(f"Creating optimized prompt format for large dataset ({total_shows} shows)")
         
         # Count genres to find most common
-        genre_counter = Counter()
+        genre_counter = collections.Counter()
         for show in shows_data:
             for genre in show.get('genres', []):
                 genre_counter[genre] += 1
@@ -814,6 +789,7 @@ Only provide the JSON output, nothing else. Ensure it's valid JSON without any c
             Cached clusters or None if cache doesn't exist or is invalid
         """
         try:
+            # Check if cache exists
             if not os.path.exists(cache_file):
                 return None
                 
@@ -822,8 +798,10 @@ Only provide the JSON output, nothing else. Ensure it's valid JSON without any c
             show_titles = sorted([show.get('title', '') for show in shows])
             current_fingerprint = f"{len(shows)}_{hash(tuple(show_titles))}"
             
-            with open(cache_file, 'r', encoding='utf-8') as f:
-                cache_data = json.load(f)
+            # Load cache data using utils function
+            cache_data = load_from_json(cache_file)
+            if not cache_data:
+                return None
                 
             # Check if the fingerprint matches
             if cache_data.get('fingerprint') == current_fingerprint:
@@ -846,9 +824,6 @@ Only provide the JSON output, nothing else. Ensure it's valid JSON without any c
             shows: List of shows to calculate a fingerprint for
         """
         try:
-            # Ensure the directory exists
-            os.makedirs(os.path.dirname(cache_file), exist_ok=True)
-            
             # Create a simple fingerprint based on number of shows and titles
             fingerprint = None
             if shows:
@@ -862,8 +837,8 @@ Only provide the JSON output, nothing else. Ensure it's valid JSON without any c
                 'fingerprint': fingerprint
             }
             
-            with open(cache_file, 'w', encoding='utf-8') as f:
-                json.dump(cache_data, f, indent=2, ensure_ascii=False)
+            # Use utils.save_to_json instead of direct JSON operations
+            save_to_json(cache_data, cache_file)
                 
             logger.info(f"Cached {len(clusters)} taste clusters")
             
@@ -872,11 +847,11 @@ Only provide the JSON output, nothing else. Ensure it's valid JSON without any c
     
     def _process_show_for_profile(self, 
         show: Dict[str, Any], 
-        genre_counter: Counter, 
-        network_counter: Counter, 
-        keyword_counter: Counter, 
-        creator_counter: Counter, 
-        actor_counter: Counter,
+        genre_counter: collections.Counter, 
+        network_counter: collections.Counter, 
+        keyword_counter: collections.Counter, 
+        creator_counter: collections.Counter, 
+        actor_counter: collections.Counter,
         top_rated_shows: List,
         recent_shows: List,
         decades: Dict,
@@ -1010,7 +985,7 @@ Only provide the JSON output, nothing else. Ensure it's valid JSON without any c
         viewing_patterns['rewatch_rate'] = rewatched_shows / len(shows_with_affinity) if shows_with_affinity else 0
         
         # Identify favorite genres (genres of favorite shows)
-        favorite_genres = Counter()
+        favorite_genres = collections.Counter()
         for show in shows_with_affinity:
             if show['affinity'].get('flags', {}).get('is_favorite', False):
                 for genre in show.get('tmdb_data', {}).get('genres', []):
@@ -1019,7 +994,7 @@ Only provide the JSON output, nothing else. Ensure it's valid JSON without any c
         viewing_patterns['favorite_genres'] = [g for g, c in favorite_genres.most_common(5)]
         
         # Identify dropped genres (genres of dropped shows)
-        dropped_genres = Counter()
+        dropped_genres = collections.Counter()
         for show in shows_with_affinity:
             if show['affinity'].get('flags', {}).get('is_dropped', False):
                 for genre in show.get('tmdb_data', {}).get('genres', []):

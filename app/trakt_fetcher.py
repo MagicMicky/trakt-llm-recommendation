@@ -34,6 +34,29 @@ class TraktFetcher:
             'Authorization': f'Bearer {access_token}'
         }
     
+    def _make_trakt_request(self, endpoint: str, error_message: str = "Error in Trakt API request", empty_result: Any = None) -> Any:
+        """
+        Make a request to the Trakt API with proper error handling.
+        
+        Args:
+            endpoint: API endpoint to call (should start with /)
+            error_message: Message to log in case of error
+            empty_result: Value to return in case of error
+            
+        Returns:
+            Response data or empty_result in case of error
+        """
+        url = f"{self.BASE_URL}{endpoint}"
+        
+        try:
+            response = requests.get(url, headers=self.headers)
+            response.raise_for_status()
+            return response.json()
+            
+        except requests.exceptions.RequestException as e:
+            logger.error(f"{error_message}: {e}")
+            return empty_result
+    
     def get_watched_shows(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
         """
         Fetch watched shows for the user.
@@ -45,30 +68,29 @@ class TraktFetcher:
             List of watched shows with their metadata
         """
         endpoint = f"/users/{self.username}/watched/shows"
-        url = f"{self.BASE_URL}{endpoint}"
         
         logger.info(f"Fetching watched shows for user {self.username}")
         
-        try:
-            response = requests.get(url, headers=self.headers)
-            response.raise_for_status()
+        watched_shows = self._make_trakt_request(
+            endpoint=endpoint,
+            error_message=f"Error fetching watched shows for user {self.username}",
+            empty_result=[]
+        )
+        
+        if not watched_shows:
+            logger.error("Failed to fetch watched shows")
+            return []
             
-            watched_shows = response.json()
-            
-            # Apply limit if specified
-            if limit and limit > 0:
-                watched_shows = watched_shows[:limit]
-            
-            logger.info(f"Successfully fetched {len(watched_shows)} watched shows")
-            
-            # Process and extract relevant show information
-            processed_shows = self._process_shows(watched_shows)
-            
-            return processed_shows
-            
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Error fetching watched shows: {e}")
-            raise
+        # Apply limit if specified
+        if limit and limit > 0:
+            watched_shows = watched_shows[:limit]
+        
+        logger.info(f"Successfully fetched {len(watched_shows)} watched shows")
+        
+        # Process and extract relevant show information
+        processed_shows = self._process_shows(watched_shows)
+        
+        return processed_shows
     
     def get_episode_watch_history(self, show_id: str) -> List[Dict[str, Any]]:
         """
@@ -81,20 +103,17 @@ class TraktFetcher:
             List of episode watch records with timestamps
         """
         endpoint = f"/users/{self.username}/history/shows/{show_id}"
-        url = f"{self.BASE_URL}{endpoint}"
         
-        try:
-            response = requests.get(url, headers=self.headers)
-            response.raise_for_status()
-            
-            episode_history = response.json()
+        episode_history = self._make_trakt_request(
+            endpoint=endpoint,
+            error_message=f"Error fetching episode history for show ID {show_id}",
+            empty_result=[]
+        )
+        
+        if episode_history:
             logger.debug(f"Fetched {len(episode_history)} episode watch records for show ID {show_id}")
             
-            return episode_history
-            
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Error fetching episode history for show ID {show_id}: {e}")
-            return []
+        return episode_history
     
     def get_all_episode_history(self, show_ids: List[str], max_shows: int = 100) -> Dict[str, List[Dict[str, Any]]]:
         """
@@ -136,20 +155,17 @@ class TraktFetcher:
             List of show ratings
         """
         endpoint = f"/users/{self.username}/ratings/shows"
-        url = f"{self.BASE_URL}{endpoint}"
         
-        try:
-            response = requests.get(url, headers=self.headers)
-            response.raise_for_status()
-            
-            ratings = response.json()
+        ratings = self._make_trakt_request(
+            endpoint=endpoint,
+            error_message=f"Error fetching show ratings for user {self.username}",
+            empty_result=[]
+        )
+        
+        if ratings:
             logger.info(f"Successfully fetched {len(ratings)} show ratings")
-            
-            return ratings
-            
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Error fetching show ratings: {e}")
-            return []
+        
+        return ratings
     
     def _process_shows(self, watched_shows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
