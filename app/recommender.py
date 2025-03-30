@@ -119,6 +119,21 @@ class Recommender:
             actors = ", ".join([f"{a['name']} ({a['count']})" for a in profile['actors']['top'][:5]])
             summary.append(f"FREQUENTLY WATCHED ACTORS: {actors}")
         
+        # Taste Clusters - include this new section
+        if profile.get('taste_clusters'):
+            summary.append("\nTASTE CLUSTERS:")
+            for i, cluster in enumerate(profile['taste_clusters'], 1):
+                cluster_summary = f"  Cluster {i}: {cluster.get('name', 'Unnamed Cluster')}"
+                cluster_summary += f"\n    Description: {cluster.get('description', 'No description')}"
+                
+                if cluster.get('genres'):
+                    cluster_summary += f"\n    Genres: {', '.join(cluster['genres'][:5])}"
+                    
+                if cluster.get('keywords'):
+                    cluster_summary += f"\n    Keywords: {', '.join(cluster['keywords'][:5])}"
+                    
+                summary.append(cluster_summary)
+        
         # Removed "Recently Watched" and "Highest Rated Shows" sections to reduce bias
         
         return "\n".join(summary)
@@ -212,10 +227,10 @@ Only provide the JSON output, nothing else.
         logger.info(prompt)
         
         # Print the prompt to the console if enabled
-        if os.environ.get("SHOW_OPENAI_PROMPT", "0") == "1":
-            print("\n=== OPENAI PROMPT ===\n")
-            print(prompt)
-            print("\n=== END PROMPT ===\n")
+        # if os.environ.get("SHOW_OPENAI_PROMPT", "0") == "1":
+        #     print("\n=== OPENAI PROMPT ===\n")
+        #     print(prompt)
+        #     print("\n=== END PROMPT ===\n")
         
         try:
             # Make the OpenAI API call using the new OpenAI API syntax
@@ -225,7 +240,7 @@ Only provide the JSON output, nothing else.
             response = self.client.chat.completions.create(
                 model="gpt-4o-mini",  # Using GPT-4o mini for faster, more efficient recommendations
                 messages=[
-                    {"role": "system", "content": "You are a TV show recommendation expert. Focus on matching user preferences (genres, themes, creators, etc.) with candidate shows, rather than recommending shows similar to specific titles they've already watched. Prioritize diverse, fresh recommendations that align with their taste profile."},
+                    {"role": "system", "content": "You are a TV show recommendation expert. Focus on matching user preferences (genres, themes, creators, etc.) with candidate shows, rather than recommending shows similar to specific titles they've already watched. Pay special attention to the user's taste clusters, which represent distinct viewing preferences. Try to recommend shows that match different taste clusters to provide a diverse yet personalized set of recommendations. Prioritize trending and fresh content that aligns with the user's established taste profiles."},
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.7,

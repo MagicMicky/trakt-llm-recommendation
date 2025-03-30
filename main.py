@@ -53,7 +53,9 @@ def generate_recommendations():
             api_key=os.getenv("TMDB_API_KEY")
         )
         
-        profile_builder = ProfileBuilder()
+        profile_builder = ProfileBuilder(
+            openai_api_key=os.getenv("OPENAI_API_KEY")
+        )
         
         candidate_fetcher = CandidateFetcher(
             tmdb_enricher=tmdb_enricher
