@@ -9,11 +9,24 @@ from datetime import datetime
 
 def setup_logging(level=logging.INFO):
     """Set up logging configuration."""
+    # Ensure log directory exists
+    os.makedirs('logs', exist_ok=True)
+    
+    # Configure root logger
     logging.basicConfig(
         level=level,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
     )
+    
+    # Create a special handler for OpenAI prompts and responses
+    openai_handler = logging.FileHandler('logs/openai_prompts.log')
+    openai_handler.setLevel(logging.INFO)
+    openai_handler.setFormatter(logging.Formatter('%(asctime)s - %(message)s', '%Y-%m-%d %H:%M:%S'))
+    
+    # Add this handler only to the recommender logger
+    openai_logger = logging.getLogger('app.recommender')
+    openai_logger.addHandler(openai_handler)
 
 def save_to_json(data, filename):
     """Save data to a JSON file."""

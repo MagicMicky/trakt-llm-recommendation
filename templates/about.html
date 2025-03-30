@@ -4,48 +4,51 @@
 
 {% block content %}
 <div class="row justify-content-center">
-    <div class="col-lg-8">
-        <h1 class="mb-4">About TV Show Recommender</h1>
+    <div class="col-lg-10">
+        <div class="text-center mb-5">
+            <h1 class="display-5 fw-bold mb-3">About TV Show Recommender</h1>
+            <p class="lead">Discover your next favorite shows with personalized AI-powered recommendations</p>
+        </div>
         
         <div class="card mb-4">
             <div class="card-body">
-                <h4>How It Works</h4>
+                <h4 class="mb-3">How It Works</h4>
                 <p>TV Show Recommender is a personalized recommendation system that analyzes your watching history from Trakt.tv and generates custom recommendations specifically tailored to your taste.</p>
                 
-                <h5 class="mt-4">The recommendation process:</h5>
-                <ol>
-                    <li>We fetch your watch history from Trakt.tv</li>
-                    <li>We enrich that data with additional information from The Movie Database (TMDB)</li>
-                    <li>We analyze your viewing patterns to build a detailed taste profile</li>
-                    <li>We identify trending and well-rated shows that you haven't seen yet</li>
-                    <li>Our AI system compares your taste profile with potential new shows</li>
-                    <li>We generate a curated list of recommendations with personalized explanations</li>
+                <h5 class="mt-4 mb-3">The recommendation process:</h5>
+                <ol class="ps-3">
+                    <li class="mb-2">We fetch your watch history from Trakt.tv</li>
+                    <li class="mb-2">We enrich that data with additional information from The Movie Database (TMDB)</li>
+                    <li class="mb-2">We analyze your viewing patterns to build a detailed taste profile</li>
+                    <li class="mb-2">We identify trending and well-rated shows that you haven't seen yet</li>
+                    <li class="mb-2">Our AI system compares your taste profile with potential new shows</li>
+                    <li class="mb-2">We generate a curated list of recommendations with personalized explanations</li>
                 </ol>
             </div>
         </div>
         
         <div class="card mb-4">
             <div class="card-body">
-                <h4>Data Sources</h4>
+                <h4 class="mb-3">Data Sources</h4>
                 <p>We use the following data sources:</p>
-                <ul>
-                    <li><a href="https://trakt.tv" target="_blank" class="text-info">Trakt.tv</a> - For your watching history</li>
-                    <li><a href="https://www.themoviedb.org" target="_blank" class="text-info">The Movie Database (TMDB)</a> - For show metadata and images</li>
+                <ul class="ps-3">
+                    <li class="mb-2"><a href="https://trakt.tv" target="_blank" class="text-info">Trakt.tv</a> - For your watching history</li>
+                    <li class="mb-2"><a href="https://www.themoviedb.org" target="_blank" class="text-info">The Movie Database (TMDB)</a> - For show metadata and images</li>
                 </ul>
-                <p>We prioritize your privacy and only process the data necessary to generate recommendations.</p>
+                <p class="mb-0">We prioritize your privacy and only process the data necessary to generate recommendations.</p>
             </div>
         </div>
         
         <div class="card">
             <div class="card-body">
-                <h4>Technology</h4>
+                <h4 class="mb-3">Technology</h4>
                 <p>This application is built with:</p>
-                <ul>
-                    <li>Python and Flask for the backend</li>
-                    <li>OpenAI's GPT models for intelligent recommendation generation</li>
-                    <li>Bootstrap for the frontend design</li>
+                <ul class="ps-3">
+                    <li class="mb-2">Python and Flask for the backend</li>
+                    <li class="mb-2">OpenAI's GPT models for intelligent recommendation generation</li>
+                    <li class="mb-2">Bootstrap for the frontend design</li>
                 </ul>
-                <p>It's an open-source project designed to help TV enthusiasts discover their next favorite show.</p>
+                <p class="mb-0">It's an open-source project designed to help TV enthusiasts discover their next favorite show.</p>
             </div>
         </div>
     </div>

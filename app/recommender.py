@@ -69,6 +69,12 @@ class Recommender:
         # Process and format the recommendations
         recommendations = self._process_recommendations(recommendations_data, candidates)
         
+        # Log a preview of the recommendations
+        logger.info("Recommendations generated:")
+        rec_titles = [rec.get('title', 'Unknown') for rec in recommendations.get('recommendations', [])]
+        logger.info(f"Shows recommended: {', '.join(rec_titles)}")
+        logger.info(f"Overall explanation: {recommendations.get('overall_explanation', '')[:100]}...")
+        
         logger.info("TV show recommendations generated successfully")
         
         return recommendations
@@ -209,8 +215,15 @@ Your response should be in this JSON format:
 Only provide the JSON output, nothing else.
 """
         
+        # Log the prompt
+        logger.info("OpenAI Prompt:")
+        logger.info(prompt)
+        
         try:
             # Make the OpenAI API call using the new OpenAI API syntax
+            logger.info("Calling OpenAI API with configuration:")
+            logger.info(f"Model: gpt-4, Temperature: 0.7, Max tokens: 2000")
+            
             response = self.client.chat.completions.create(
                 model="gpt-4",  # Using GPT-4 for better recommendations
                 messages=[
@@ -220,6 +233,9 @@ Only provide the JSON output, nothing else.
                 temperature=0.7,
                 max_tokens=2000
             )
+            
+            # Log successful response
+            logger.info("OpenAI API call completed successfully")
             
             # Extract and return the response content - new API returns content differently
             return response.choices[0].message.content.strip()

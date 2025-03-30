@@ -13,8 +13,8 @@ RUN mkdir -p /app/templates /app/static
 COPY . .
 
 # Create data directory for caching with proper permissions
-RUN mkdir -p /app/data && \
-    chmod -R 777 /app/data
+RUN mkdir -p /app/data /app/logs && \
+    chmod -R 777 /app/data /app/logs
 
 # Create a non-root user for security
 RUN useradd -m appuser
