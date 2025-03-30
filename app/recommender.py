@@ -119,15 +119,7 @@ class Recommender:
             actors = ", ".join([f"{a['name']} ({a['count']})" for a in profile['actors']['top'][:5]])
             summary.append(f"FREQUENTLY WATCHED ACTORS: {actors}")
         
-        # Recent shows
-        if profile['recent_shows']:
-            recent = ", ".join([show.get('title', 'Unknown') for show in profile['recent_shows'][:5]])
-            summary.append(f"RECENTLY WATCHED: {recent}")
-        
-        # Top-rated shows
-        if profile['top_rated_shows']:
-            top_rated = ", ".join([show.get('title', 'Unknown') for show in profile['top_rated_shows'][:5]])
-            summary.append(f"HIGHEST RATED SHOWS: {top_rated}")
+        # Removed "Recently Watched" and "Highest Rated Shows" sections to reduce bias
         
         return "\n".join(summary)
     
@@ -219,15 +211,21 @@ Only provide the JSON output, nothing else.
         logger.info("OpenAI Prompt:")
         logger.info(prompt)
         
+        # Print the prompt to the console if enabled
+        if os.environ.get("SHOW_OPENAI_PROMPT", "0") == "1":
+            print("\n=== OPENAI PROMPT ===\n")
+            print(prompt)
+            print("\n=== END PROMPT ===\n")
+        
         try:
             # Make the OpenAI API call using the new OpenAI API syntax
             logger.info("Calling OpenAI API with configuration:")
-            logger.info(f"Model: gpt-4, Temperature: 0.7, Max tokens: 2000")
+            logger.info(f"Model: gpt-4o-mini, Temperature: 0.7, Max tokens: 2000")
             
             response = self.client.chat.completions.create(
-                model="gpt-4",  # Using GPT-4 for better recommendations
+                model="gpt-4o-mini",  # Using GPT-4o mini for faster, more efficient recommendations
                 messages=[
-                    {"role": "system", "content": "You are a TV show recommendation expert."},
+                    {"role": "system", "content": "You are a TV show recommendation expert. Focus on matching user preferences (genres, themes, creators, etc.) with candidate shows, rather than recommending shows similar to specific titles they've already watched. Prioritize diverse, fresh recommendations that align with their taste profile."},
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.7,

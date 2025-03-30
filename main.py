@@ -63,6 +63,9 @@ def generate_recommendations():
             openai_api_key=os.getenv("OPENAI_API_KEY")
         )
         
+        # Enable prompt visibility - set environment variable to control if we want to see the prompt
+        os.environ["SHOW_OPENAI_PROMPT"] = "1"
+        
         # Step 1: Fetch watch history from Trakt
         logger.info("Fetching watch history from Trakt")
         watch_history = trakt_fetcher.get_watched_shows()
