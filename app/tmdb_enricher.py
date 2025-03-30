@@ -175,8 +175,16 @@ class TMDBEnricher:
             List of trending shows
         """
         try:
-            trending = tmdb.Trending()
-            response = trending.tv(time_window=time_window, page=page)
+            # The correct way to use tmdbsimple for trending shows
+            # Instead of trending.tv(), we need to use trending.tv_shows()
+            discover = tmdb.Discover()
+            # We'll use discover with sorting by popularity as a workaround
+            response = discover.tv(
+                sort_by='popularity.desc',
+                page=page,
+                include_adult=False,
+                include_null_first_air_dates=False
+            )
             
             trending_shows = response.get('results', [])
             processed_shows = []
@@ -203,6 +211,7 @@ class TMDBEnricher:
                 
                 processed_shows.append(processed_show)
             
+            logger.info(f"Retrieved {len(processed_shows)} trending shows")
             return processed_shows
             
         except Exception as e:

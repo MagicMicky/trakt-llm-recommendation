@@ -55,4 +55,48 @@ def calculate_runtime_hours(minutes):
     elif hours > 0:
         return f"{hours}h"
     else:
-        return f"{remaining_minutes}m" 
+        return f"{remaining_minutes}m"
+
+def cache_recommendations(recommendations, cache_file='data/recommendations_cache.json'):
+    """
+    Save recommendations to a cache file.
+    
+    Args:
+        recommendations: The recommendations data to cache
+        cache_file: Path to the cache file
+        
+    Returns:
+        bool: True if caching was successful, False otherwise
+    """
+    try:
+        save_to_json(recommendations, cache_file)
+        return True
+    except Exception as e:
+        logging.error(f"Error caching recommendations: {e}")
+        return False
+
+def get_cached_recommendations(cache_file='data/recommendations_cache.json', max_age_hours=24):
+    """
+    Retrieve cached recommendations if available and not expired.
+    
+    Args:
+        cache_file: Path to the cache file
+        max_age_hours: Maximum age of cache in hours before considered stale
+        
+    Returns:
+        dict: Cached recommendations or None if not available or expired
+    """
+    try:
+        if not os.path.exists(cache_file):
+            return None
+            
+        # Check if cache file is too old
+        file_age = datetime.now().timestamp() - os.path.getmtime(cache_file)
+        if file_age > (max_age_hours * 3600):  # Convert hours to seconds
+            logging.info(f"Cache file is older than {max_age_hours} hours, will regenerate recommendations")
+            return None
+            
+        return load_from_json(cache_file)
+    except Exception as e:
+        logging.error(f"Error retrieving cached recommendations: {e}")
+        return None 

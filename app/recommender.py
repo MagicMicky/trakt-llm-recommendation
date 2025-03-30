@@ -39,6 +39,20 @@ class Recommender:
         """
         logger.info(f"Generating {num_recommendations} TV show recommendations")
         
+        # Check if we have enough candidates
+        available_candidates = len(candidates)
+        if available_candidates == 0:
+            logger.error("No candidate shows available for recommendations")
+            return {
+                "recommendations": [],
+                "overall_explanation": "We couldn't find any new shows to recommend at this time. This could be due to temporary API limitations. Please try again later."
+            }
+        
+        # Adjust number of recommendations if we don't have enough candidates
+        if available_candidates < num_recommendations:
+            logger.warning(f"Only {available_candidates} candidates available, reducing recommendations from {num_recommendations}")
+            num_recommendations = available_candidates
+        
         # Prepare user profile summary
         profile_summary = self._prepare_profile_summary(user_profile)
         
