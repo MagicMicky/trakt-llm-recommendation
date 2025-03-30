@@ -7,6 +7,9 @@ import json
 from typing import List, Dict, Any
 import os
 from openai import OpenAI
+import time
+import random
+import requests
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +27,423 @@ class Recommender:
         os.environ["OPENAI_API_KEY"] = openai_api_key
         # Initialize client without any parameters
         self.client = OpenAI()
+    
+    def get_recommendation_candidates(self, user_profile: Dict[str, Any], watched_shows: List[Dict[str, Any]], max_candidates: int = 100) -> List[Dict[str, Any]]:
+        """
+        Get candidate shows for recommendations based on user profile and affinity scores.
+        
+        Args:
+            user_profile: User taste profile with affinity data
+            watched_shows: List of shows the user has already watched
+            max_candidates: Maximum number of candidates to return
+            
+        Returns:
+            List of candidate shows for recommendations
+        """
+        logger.info(f"Fetching candidate shows based on user profile")
+        
+        # Extract watched show IDs to avoid recommending shows the user has already seen
+        watched_tmdb_ids = set()
+        for show in watched_shows:
+            tmdb_id = show.get('tmdb_id')
+            if tmdb_id:
+                watched_tmdb_ids.add(tmdb_id)
+        
+        logger.info(f"User has watched {len(watched_tmdb_ids)} unique shows with TMDB IDs")
+        
+        # Get candidate shows from multiple sources
+        candidates = []
+        
+        # 1. Discover shows based on favorite genres from the profile
+        favorite_genres = []
+        if user_profile.get('genres', {}).get('top'):
+            favorite_genres = [g['name'] for g in user_profile['genres']['top'][:5]]
+        
+        # Add genre-based candidates
+        genre_candidates = self._discover_shows_by_genres(favorite_genres, watched_tmdb_ids)
+        candidates.extend(genre_candidates)
+        logger.info(f"Found {len(genre_candidates)} genre-based candidates")
+        
+        # 2. Find similar shows based on favorites if available
+        favorite_shows = user_profile.get('favorite_shows', [])
+        if favorite_shows:
+            # Use only top 5 favorites to avoid too many API calls
+            for show in favorite_shows[:5]:
+                tmdb_id = show.get('tmdb_id')
+                if tmdb_id:
+                    similar_shows = self._get_similar_shows(tmdb_id, watched_tmdb_ids)
+                    candidates.extend(similar_shows)
+            
+            logger.info(f"Added similar shows based on user favorites")
+        
+        # 3. Consider viewing patterns when fetching candidates
+        viewing_patterns = user_profile.get('viewing_patterns', {})
+        viewing_mode = viewing_patterns.get('viewing_mode', 'unknown')
+        
+        # If user is a binge watcher, prioritize shows with multiple seasons
+        if viewing_mode == 'binge_watcher':
+            bingeable_candidates = self._discover_shows_with_params(
+                {"with_runtime.gte": 40, "vote_average.gte": 7},
+                watched_tmdb_ids,
+                limit=20
+            )
+            candidates.extend(bingeable_candidates)
+            logger.info(f"Added {len(bingeable_candidates)} bingeable show candidates")
+        
+        # If user is a completionist, find shows with completed runs
+        elif viewing_mode == 'completionist':
+            completed_candidates = self._discover_shows_with_params(
+                {"status": "Ended", "vote_average.gte": 7.5},
+                watched_tmdb_ids,
+                limit=20
+            )
+            candidates.extend(completed_candidates)
+            logger.info(f"Added {len(completed_candidates)} completed show candidates")
+        
+        # 4. Add trending shows to ensure we have enough candidates
+        if len(candidates) < max_candidates:
+            trending_candidates = self._get_trending_shows(watched_tmdb_ids)
+            candidates.extend(trending_candidates)
+            logger.info(f"Added {len(trending_candidates)} trending show candidates")
+        
+        # Remove duplicates while preserving order
+        unique_candidates = self._remove_duplicate_candidates(candidates)
+        
+        # Limit to max_candidates
+        candidates = unique_candidates[:max_candidates]
+        
+        logger.info(f"Selected {len(candidates)} total candidate shows for recommendations")
+        return candidates
+    
+    def _discover_shows_by_genres(self, genres: List[str], watched_ids: set, limit: int = 30) -> List[Dict[str, Any]]:
+        """
+        Discover shows based on genres.
+        
+        Args:
+            genres: List of genres to match
+            watched_ids: Set of watched show IDs to exclude
+            limit: Maximum number of recommendations to return
+            
+        Returns:
+            List of discovered shows
+        """
+        if not genres:
+            return []
+            
+        logger.info(f"Discovering shows with genres: {genres}")
+        
+        discovered_shows = []
+        
+        # Convert genre names to TMDB genre IDs
+        genre_id_map = {
+            "Action & Adventure": 10759,
+            "Animation": 16,
+            "Comedy": 35,
+            "Crime": 80,
+            "Documentary": 99,
+            "Drama": 18,
+            "Family": 10751,
+            "Kids": 10762,
+            "Mystery": 9648,
+            "News": 10763,
+            "Reality": 10764,
+            "Sci-Fi & Fantasy": 10765,
+            "Soap": 10766,
+            "Talk": 10767,
+            "War & Politics": 10768,
+            "Western": 37
+        }
+        
+        # Match genre names to IDs
+        genre_ids = []
+        for genre in genres:
+            if genre in genre_id_map:
+                genre_ids.append(genre_id_map[genre])
+        
+        if not genre_ids:
+            return []
+            
+        try:
+            # Make API request to TMDB
+            for genre_id in genre_ids[:3]:  # Limit to 3 genres to avoid too many API calls
+                params = {
+                    "api_key": os.getenv("TMDB_API_KEY"),
+                    "with_genres": genre_id,
+                    "sort_by": "popularity.desc",
+                    "page": 1,
+                    "language": "en-US"
+                }
+                
+                response = requests.get(
+                    "https://api.themoviedb.org/3/discover/tv",
+                    params=params
+                )
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    results = data.get("results", [])
+                    
+                    for show in results:
+                        # Skip shows the user has already watched
+                        if show.get("id") in watched_ids:
+                            continue
+                            
+                        # Process the show data
+                        processed_show = self._process_tmdb_show(show)
+                        discovered_shows.append(processed_show)
+                        
+                        # Break if we have enough shows
+                        if len(discovered_shows) >= limit:
+                            break
+                
+                # Add delay to avoid rate limiting
+                time.sleep(0.25)
+                
+                # Break if we have enough shows
+                if len(discovered_shows) >= limit:
+                    break
+                    
+        except Exception as e:
+            logger.error(f"Error discovering shows by genres: {e}")
+        
+        return discovered_shows[:limit]
+    
+    def _discover_shows_with_params(self, params: Dict[str, Any], watched_ids: set, limit: int = 20) -> List[Dict[str, Any]]:
+        """
+        Discover shows with specific parameters.
+        
+        Args:
+            params: Parameters for discovery
+            watched_ids: Set of watched show IDs to exclude
+            limit: Maximum number of recommendations to return
+            
+        Returns:
+            List of discovered shows
+        """
+        logger.info(f"Discovering shows with params: {params}")
+        
+        discovered_shows = []
+        
+        try:
+            # Make API request to TMDB
+            api_params = {
+                "api_key": os.getenv("TMDB_API_KEY"),
+                "sort_by": "popularity.desc",
+                "page": 1,
+                "language": "en-US"
+            }
+            
+            # Add custom params
+            for key, value in params.items():
+                api_params[key] = value
+            
+            response = requests.get(
+                "https://api.themoviedb.org/3/discover/tv",
+                params=api_params
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                results = data.get("results", [])
+                
+                for show in results:
+                    # Skip shows the user has already watched
+                    if show.get("id") in watched_ids:
+                        continue
+                        
+                    # Process the show data
+                    processed_show = self._process_tmdb_show(show)
+                    discovered_shows.append(processed_show)
+                    
+                    # Break if we have enough shows
+                    if len(discovered_shows) >= limit:
+                        break
+                        
+        except Exception as e:
+            logger.error(f"Error discovering shows with params: {e}")
+        
+        return discovered_shows[:limit]
+    
+    def _get_similar_shows(self, tmdb_id: int, watched_ids: set, limit: int = 10) -> List[Dict[str, Any]]:
+        """
+        Get shows similar to a given show.
+        
+        Args:
+            tmdb_id: TMDB ID of the show
+            watched_ids: Set of watched show IDs to exclude
+            limit: Maximum number of recommendations to return
+            
+        Returns:
+            List of similar shows
+        """
+        logger.info(f"Getting shows similar to TMDB ID: {tmdb_id}")
+        
+        similar_shows = []
+        
+        try:
+            # Make API request to TMDB
+            params = {
+                "api_key": os.getenv("TMDB_API_KEY"),
+                "language": "en-US",
+                "page": 1
+            }
+            
+            response = requests.get(
+                f"https://api.themoviedb.org/3/tv/{tmdb_id}/similar",
+                params=params
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                results = data.get("results", [])
+                
+                for show in results:
+                    # Skip shows the user has already watched
+                    if show.get("id") in watched_ids:
+                        continue
+                        
+                    # Process the show data
+                    processed_show = self._process_tmdb_show(show)
+                    similar_shows.append(processed_show)
+                    
+                    # Break if we have enough shows
+                    if len(similar_shows) >= limit:
+                        break
+                        
+        except Exception as e:
+            logger.error(f"Error getting similar shows: {e}")
+        
+        return similar_shows[:limit]
+    
+    def _get_trending_shows(self, watched_ids: set, limit: int = 30) -> List[Dict[str, Any]]:
+        """
+        Get trending TV shows.
+        
+        Args:
+            watched_ids: Set of watched show IDs to exclude
+            limit: Maximum number of recommendations to return
+            
+        Returns:
+            List of trending shows
+        """
+        logger.info(f"Getting trending TV shows")
+        
+        trending_shows = []
+        
+        try:
+            # Make API request to TMDB
+            params = {
+                "api_key": os.getenv("TMDB_API_KEY"),
+                "language": "en-US"
+            }
+            
+            response = requests.get(
+                "https://api.themoviedb.org/3/trending/tv/week",
+                params=params
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                results = data.get("results", [])
+                
+                for show in results:
+                    # Skip shows the user has already watched
+                    if show.get("id") in watched_ids:
+                        continue
+                        
+                    # Process the show data
+                    processed_show = self._process_tmdb_show(show)
+                    trending_shows.append(processed_show)
+                    
+                    # Break if we have enough shows
+                    if len(trending_shows) >= limit:
+                        break
+                        
+        except Exception as e:
+            logger.error(f"Error getting trending shows: {e}")
+        
+        return trending_shows[:limit]
+    
+    def _process_tmdb_show(self, show: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Process show data from TMDB API response.
+        
+        Args:
+            show: Show data from TMDB API
+            
+        Returns:
+            Processed show data
+        """
+        # Extract genres if available
+        genre_ids = show.get("genre_ids", [])
+        genres = []
+        
+        # Map genre IDs to names
+        genre_id_map = {
+            10759: "Action & Adventure",
+            16: "Animation",
+            35: "Comedy",
+            80: "Crime",
+            99: "Documentary",
+            18: "Drama",
+            10751: "Family",
+            10762: "Kids",
+            9648: "Mystery",
+            10763: "News",
+            10764: "Reality",
+            10765: "Sci-Fi & Fantasy",
+            10766: "Soap",
+            10767: "Talk",
+            10768: "War & Politics",
+            37: "Western"
+        }
+        
+        for genre_id in genre_ids:
+            if genre_id in genre_id_map:
+                genres.append(genre_id_map[genre_id])
+        
+        # Create processed show
+        processed_show = {
+            "tmdb_id": show.get("id"),
+            "title": show.get("name", "Unknown"),
+            "overview": show.get("overview", ""),
+            "first_air_date": show.get("first_air_date", ""),
+            "vote_average": show.get("vote_average", 0),
+            "popularity": show.get("popularity", 0),
+            "genres": genres
+        }
+        
+        # Add poster and backdrop URLs if available
+        poster_path = show.get("poster_path")
+        if poster_path:
+            processed_show["poster_url"] = f"https://image.tmdb.org/t/p/w500{poster_path}"
+        
+        backdrop_path = show.get("backdrop_path")
+        if backdrop_path:
+            processed_show["backdrop_url"] = f"https://image.tmdb.org/t/p/w1280{backdrop_path}"
+        
+        return processed_show
+    
+    def _remove_duplicate_candidates(self, candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Remove duplicate candidates while preserving order.
+        
+        Args:
+            candidates: List of candidate shows
+            
+        Returns:
+            List of unique candidate shows
+        """
+        seen_ids = set()
+        unique_candidates = []
+        
+        for candidate in candidates:
+            tmdb_id = candidate.get("tmdb_id")
+            if tmdb_id and tmdb_id not in seen_ids:
+                seen_ids.add(tmdb_id)
+                unique_candidates.append(candidate)
+        
+        return unique_candidates
     
     def generate_recommendations(self, user_profile: Dict[str, Any], candidates: List[Dict[str, Any]], num_recommendations: int = 5) -> Dict[str, Any]:
         """
@@ -119,7 +539,66 @@ class Recommender:
             actors = ", ".join([f"{a['name']} ({a['count']})" for a in profile['actors']['top'][:5]])
             summary.append(f"FREQUENTLY WATCHED ACTORS: {actors}")
         
-        # Taste Clusters - include this new section
+        # Add viewing patterns section
+        if 'viewing_patterns' in profile:
+            viewing_patterns = profile['viewing_patterns']
+            summary.append("\nVIEWING PATTERNS:")
+            
+            # Describe viewing mode
+            viewing_mode = viewing_patterns.get('viewing_mode', 'unknown')
+            if viewing_mode == 'binge_watcher':
+                summary.append("  Viewing Style: Tends to binge-watch shows rapidly")
+            elif viewing_mode == 'completionist':
+                summary.append("  Viewing Style: Typically watches shows to completion")
+            elif viewing_mode == 'rewatcher':
+                summary.append("  Viewing Style: Often rewatches favorite content")
+            else:
+                summary.append("  Viewing Style: Casual viewer")
+            
+            # Add format preferences
+            format_prefs = viewing_patterns.get('format_preferences', [])
+            if format_prefs:
+                formatted_prefs = []
+                for pref in format_prefs:
+                    if pref == 'mini_series':
+                        formatted_prefs.append("mini-series")
+                    elif pref == 'long_running_series':
+                        formatted_prefs.append("long-running series")
+                    elif pref == 'anthology':
+                        formatted_prefs.append("anthology series")
+                    else:
+                        formatted_prefs.append(pref)
+                
+                summary.append(f"  Format Preferences: {', '.join(formatted_prefs)}")
+            
+            # Add dropped genres (genres the user tends to abandon)
+            dropped_genres = viewing_patterns.get('dropped_genres', [])
+            if dropped_genres:
+                summary.append(f"  Often Drops: Shows in these genres: {', '.join(dropped_genres[:3])}")
+        
+        # Add favorite shows based on affinity scores
+        if 'favorite_shows' in profile and profile['favorite_shows']:
+            summary.append("\nFAVORITE SHOWS (Based on Watch Patterns):")
+            for i, show in enumerate(profile['favorite_shows'][:5], 1):
+                title = show.get('title', 'Unknown')
+                genres = ", ".join(show.get('genres', [])[:3])
+                score = show.get('affinity_score', 0)
+                summary.append(f"  {i}. {title} - Genres: {genres} - Affinity Score: {score}")
+        
+        # Add binged shows
+        if 'binged_shows' in profile and profile['binged_shows']:
+            summary.append("\nBINGED SHOWS:")
+            for i, show in enumerate(profile['binged_shows'][:3], 1):
+                title = show.get('title', 'Unknown')
+                days = show.get('time_span_days', 'Unknown')
+                episodes = show.get('episodes', 0)
+                if days and episodes > 1:
+                    rate = f"{days / episodes:.1f} days/episode"
+                    summary.append(f"  {i}. {title} - {episodes} episodes in {days} days ({rate})")
+                else:
+                    summary.append(f"  {i}. {title} - Binged rapidly")
+        
+        # Taste Clusters
         if profile.get('taste_clusters'):
             summary.append("\nTASTE CLUSTERS:")
             for i, cluster in enumerate(profile['taste_clusters'], 1):
@@ -131,11 +610,12 @@ class Recommender:
                     
                 if cluster.get('keywords'):
                     cluster_summary += f"\n    Keywords: {', '.join(cluster['keywords'][:5])}"
+                
+                if cluster.get('example_shows'):
+                    cluster_summary += f"\n    Example Shows: {', '.join(cluster['example_shows'][:3])}"
                     
                 summary.append(cluster_summary)
-        
-        # Removed "Recently Watched" and "Highest Rated Shows" sections to reduce bias
-        
+                
         return "\n".join(summary)
     
     def _prepare_candidates_data(self, candidates: List[Dict[str, Any]]) -> str:
