@@ -1,0 +1,13 @@
+version: '3.8'
+
+services:
+  tv-recommender:
+    build: .
+    container_name: tv-recommender
+    ports:
+      - "5000:5000"  # Map Flask's default port
+    volumes:
+      - .:/app  # Mount current directory for development
+    env_file:
+      - .env
+    restart: unless-stopped 
