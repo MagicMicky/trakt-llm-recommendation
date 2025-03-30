@@ -190,7 +190,7 @@ class Recommender:
         """
         # Construct the prompt
         prompt = f"""
-You are a TV show recommendation expert. Based on a user's watching history and preferences, you'll recommend {num_recommendations} TV shows from a list of candidates that they would enjoy the most.
+You are a TV show recommendation expert with deep knowledge of storytelling, genres, and viewing preferences. Based on a user's watching history and taste profile, you'll recommend {num_recommendations} TV shows from a list of candidates that they would enjoy the most.
 
 # USER PROFILE
 {profile_summary}
@@ -198,12 +198,33 @@ You are a TV show recommendation expert. Based on a user's watching history and 
 # CANDIDATE SHOWS
 {candidates_data}
 
-Based on the user's viewing history and preferences, select the {num_recommendations} TV shows from the candidates that they would most likely enjoy and explain why.
+IMPORTANT: Avoid anchoring bias in your recommendations. Don't overemphasize any single aspect of the user's profile (like the most frequent genre or most recent shows). Consider their full spectrum of preferences holistically and with equal weight.
+
+Based on the user's viewing history and taste profile, select {num_recommendations} TV shows from the candidates list that the user would most likely enjoy. Your selections should:
+
+1. BALANCED CLUSTER MATCHING: Each recommendation should clearly match one or more of the user's taste clusters, but don't favor any single cluster exclusively. Look for candidates that might appeal across multiple clusters or represent an evolution of their tastes.
+
+2. PROVIDE DIVERSITY: Include at least one recommendation that might surprise the user but still aligns with their underlying preferences in a less obvious way. Look beyond surface-level genre matching to deeper thematic or stylistic connections.
+
+3. RESPECT VIEWING MODES: Consider different viewing experiences the user might enjoy based on their history:
+   - Binge-worthy shows with compelling season-long arcs
+   - Standalone episodic content for casual viewing
+   - Genre-bending or innovative format shows that push boundaries
+   - Shows that match their preferred episode length and season count
+
+4. COMPLEMENT EXISTING TASTES: Look for shows that fill gaps in their viewing history or represent high-quality examples of genres/themes they've shown interest in.
+
+5. AVOID RECOMMENDATION TRAPS: Don't fall into these common recommendation pitfalls:
+   - Overemphasizing the most frequent genres and ignoring occasional interests
+   - Focusing too much on prestige or popularity metrics
+   - Assuming that more recent viewing choices are more important than older ones
+   - Recommending only what is most similar rather than what might genuinely interest them
 
 For each recommendation, provide:
 1. The show title and TMDB_ID
-2. A personalized explanation of why this show matches their taste profile (be specific about which aspects of their profile match this show)
-3. How this show differs from the others they've watched (what makes it fresh or new)
+2. A personalized explanation that connects this show to specific aspects of their taste profile (mention cluster names when relevant)
+3. Why this particular show stands out from the candidates and how it differs from what they've already watched
+4. One specific viewing mode or context that makes this show particularly enjoyable (e.g., "Perfect for weekend binge-watching," "Great for episodic viewing," etc.)
 
 Your response should be in this JSON format:
 {{
@@ -211,15 +232,16 @@ Your response should be in this JSON format:
     {{
       "title": "Show Title",
       "tmdb_id": 12345,
-      "explanation": "Detailed explanation of why this matches their preferences...",
-      "unique_appeal": "What makes this show fresh or different from what they've already watched..."
+      "explanation": "Detailed explanation of why this matches their preferences, including which taste clusters it aligns with...",
+      "unique_appeal": "What makes this show fresh or different from what they've already watched...",
+      "viewing_suggestion": "A specific viewing context recommendation"
     }},
     // Additional recommendations...
   ],
-  "overall_explanation": "A brief summary explaining the overall recommendation strategy and how these shows complement each other..."
+  "overall_explanation": "A brief summary explaining the overall recommendation strategy, how these shows complement each other, and how they address different aspects of the user's taste profile..."
 }}
 
-Only provide the JSON output, nothing else.
+Only provide the JSON output, nothing else. Ensure it's valid JSON.
 """
         
         # Log the prompt
@@ -240,7 +262,7 @@ Only provide the JSON output, nothing else.
             response = self.client.chat.completions.create(
                 model="gpt-4o-mini",  # Using GPT-4o mini for faster, more efficient recommendations
                 messages=[
-                    {"role": "system", "content": "You are a TV show recommendation expert. Focus on matching user preferences (genres, themes, creators, etc.) with candidate shows, rather than recommending shows similar to specific titles they've already watched. Pay special attention to the user's taste clusters, which represent distinct viewing preferences. Try to recommend shows that match different taste clusters to provide a diverse yet personalized set of recommendations. Prioritize trending and fresh content that aligns with the user's established taste profiles."},
+                    {"role": "system", "content": "You are a TV show recommendation expert. Focus on providing balanced, unbiased recommendations by considering the user's entire taste profile holistically. Avoid common anchoring biases like overweighting recent shows, most frequent genres, or most prominent keywords. Pay special attention to the user's diverse taste clusters and consider them with equal importance. Aim to provide recommendations that both match existing preferences and thoughtfully expand their horizons with carefully selected new experiences."},
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.7,
@@ -290,6 +312,14 @@ Only provide the JSON output, nothing else.
                     recommendation['backdrop_url'] = candidate.get('backdrop_url')
                     recommendation['overview'] = candidate.get('overview')
                     recommendation['first_air_date'] = candidate.get('first_air_date')
+                
+                # Ensure all fields exist, even if empty
+                if 'viewing_suggestion' not in recommendation:
+                    recommendation['viewing_suggestion'] = ""
+                if 'unique_appeal' not in recommendation:
+                    recommendation['unique_appeal'] = ""
+                if 'explanation' not in recommendation:
+                    recommendation['explanation'] = "Recommended based on your viewing history."
             
             return recommendations_json
             

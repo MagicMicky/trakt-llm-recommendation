@@ -46,6 +46,12 @@
                                 <strong>What's fresh:</strong> {{ rec.unique_appeal }}
                             </div>
                         {% endif %}
+                        
+                        {% if rec.viewing_suggestion %}
+                            <div class="viewing-suggestion mt-3 mb-0">
+                                <span class="badge bg-accent py-2 px-3">{{ rec.viewing_suggestion }}</span>
+                            </div>
+                        {% endif %}
                     </div>
                 </div>
             </div>

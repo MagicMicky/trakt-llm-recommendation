@@ -221,14 +221,8 @@ class ProfileBuilder:
             
             prepared_shows.append(prepared_show)
         
-        # If we have too many shows, sample a representative subset for efficiency
-        if len(prepared_shows) > 50:
-            # Sort by rating first to ensure we include some highly-rated shows
-            sorted_shows = sorted(prepared_shows, key=lambda x: x.get('vote_average', 0), reverse=True)
-            # Take top 20 and a random sample of 30 more
-            sampled_shows = sorted_shows[:20] + random.sample(sorted_shows[20:], min(30, len(sorted_shows) - 20))
-            logger.info(f"Sampled {len(sampled_shows)} shows for clustering out of {len(prepared_shows)} total")
-            return sampled_shows
+        # Log the total number of shows being used for clustering
+        logger.info(f"Using all {len(prepared_shows)} shows for taste clustering")
         
         return prepared_shows
     
@@ -253,10 +247,16 @@ Below is a list of TV shows that a user has watched:
 
 {shows_text}
 
-Based on this watch history, identify 3-5 distinct taste clusters or viewing preferences.
+Based on this complete watch history, identify 5-10 distinct taste clusters or viewing preferences. When analyzing this data:
+- Consider the entire dataset holistically
+- Look for natural groupings based on genres, themes, tones, or content styles
+- Focus on identifying distinct viewing preferences that represent different aspects of the user's taste
+- Each cluster should be clearly differentiated from the others
+- Do not copy or reuse any phrases from this prompt. Create original, specific labels that reflect the data.
+- Be creative in naming clusters — think like a cultural critic or journalist writing about a viewer’s unique taste.
 
 For each cluster:
-1. Provide a short descriptive name (e.g., "Gritty Crime Dramas", "Lighthearted Comedies", "Thought-Provoking Sci-Fi")
+1. Provide a short descriptive name (use your own words based on the content — avoid using generic TV genre phrases)
 2. List the key genres that define this cluster
 3. List 5-8 keywords or themes common in this cluster
 4. Include 3-5 example shows from the user's watch history that best represent this cluster
@@ -434,6 +434,15 @@ Only provide the JSON output, nothing else. Ensure it's valid JSON without any c
         Returns:
             Formatted string of show data
         """
+        # Check if we have a very large dataset
+        total_shows = len(shows_data)
+        logger.info(f"Formatting {total_shows} shows for prompt")
+        
+        # For very large datasets, we'll provide a summary and representative samples
+        if total_shows > 100:
+            return self._format_large_dataset_for_prompt(shows_data)
+        
+        # For smaller datasets, include all shows with details
         formatted_shows = []
         
         for i, show in enumerate(shows_data, 1):
@@ -456,6 +465,93 @@ Only provide the JSON output, nothing else. Ensure it's valid JSON without any c
             formatted_shows.append(show_text)
         
         return "\n\n".join(formatted_shows)
+        
+    def _format_large_dataset_for_prompt(self, shows_data: List[Dict[str, Any]]) -> str:
+        """
+        Format a large dataset of shows for the prompt by providing a summary and representative samples.
+        
+        Args:
+            shows_data: Prepared show data (large dataset)
+            
+        Returns:
+            Formatted string with summary and samples
+        """
+        total_shows = len(shows_data)
+        logger.info(f"Creating optimized prompt format for large dataset ({total_shows} shows)")
+        
+        # Count genres to find most common
+        genre_counter = Counter()
+        for show in shows_data:
+            for genre in show.get('genres', []):
+                genre_counter[genre] += 1
+                
+        # Get top genres
+        top_genres = [genre for genre, count in genre_counter.most_common(10)]
+        
+        # Create groups by genre
+        shows_by_genre = {genre: [] for genre in top_genres}
+        
+        # Group shows by their primary genre (use first listed genre)
+        for show in shows_data:
+            genres = show.get('genres', [])
+            if genres:
+                # Find the first genre that's in our top genres
+                for genre in genres:
+                    if genre in top_genres:
+                        shows_by_genre[genre].append(show)
+                        break
+        
+        # Format output with summary and samples
+        output_parts = []
+        
+        # Overall summary
+        output_parts.append(f"WATCH HISTORY SUMMARY:\nTotal Shows: {total_shows}\nTop Genres: {', '.join(top_genres)}\n")
+        
+        # Add representative samples from each genre
+        output_parts.append("REPRESENTATIVE SAMPLES BY GENRE:")
+        
+        for genre in top_genres:
+            genre_shows = shows_by_genre[genre]
+            if not genre_shows:
+                continue
+                
+            output_parts.append(f"\n--- {genre.upper()} SHOWS ({len(genre_shows)} total) ---")
+            
+            # Sort by rating and take top shows from this genre
+            genre_shows.sort(key=lambda x: x.get('vote_average', 0), reverse=True)
+            sample_size = min(5, len(genre_shows))
+            samples = genre_shows[:sample_size]
+            
+            # Format each sample
+            for i, show in enumerate(samples, 1):
+                show_text = f"  {i}. {show.get('title', 'Unknown')}"
+                
+                # Add year if available
+                first_air_date = show.get('first_air_date', '')
+                if first_air_date and len(first_air_date) >= 4:
+                    show_text += f" ({first_air_date[:4]})"
+                    
+                # Add rating if available
+                vote_average = show.get('vote_average', 0)
+                if vote_average:
+                    show_text += f" - Rating: {vote_average}"
+                    
+                # Add keywords if available
+                keywords = show.get('keywords', [])[:3]  # Limit to 3 keywords
+                if keywords:
+                    show_text += f" - Keywords: {', '.join(keywords)}"
+                    
+                output_parts.append(show_text)
+        
+        # Add a full listing of all shows (just titles) for reference
+        output_parts.append("\nFULL SHOW LIST:")
+        
+        # Sort alphabetically for easier reference
+        sorted_shows = sorted(shows_data, key=lambda x: x.get('title', '').lower())
+        show_titles = [f"  • {show.get('title', 'Unknown')}" for show in sorted_shows]
+        output_parts.append("\n".join(show_titles))
+        
+        return "\n".join(output_parts)
     
     def _get_cached_clusters(self, cache_file: str, shows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
