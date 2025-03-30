@@ -1,5 +1,29 @@
 """
-Module for interacting with Large Language Models (specifically OpenAI).
+LLM Service Module - Provides a unified interface for interacting with OpenAI's LLM APIs.
+
+This module centralizes OpenAI API interactions across the application, handling:
+- Client initialization and configuration
+- API calls with standardized error handling
+- Consistent logging
+- JSON response parsing and cleaning
+- Fallback mechanisms for API failures
+
+Usage Examples:
+-------------
+# Basic text generation:
+llm_service = LLMService()
+response = llm_service.generate_text(
+    prompt="Tell me about Paris",
+    system_message="You are a helpful travel guide."
+)
+
+# JSON generation with error handling:
+llm_service = LLMService()
+data = llm_service.generate_json(
+    prompt="List the top 3 attractions in Paris",
+    system_message="You are a data provider that only returns valid JSON.",
+    fallback_response={"attractions": []}
+)
 """
 
 import logging
@@ -10,27 +34,37 @@ from typing import Dict, List, Any, Optional, Union
 from openai import OpenAI, APIError, RateLimitError
 
 logger = logging.getLogger(__name__)
+openai_logger = logging.getLogger('openai.prompt')
 
 class LLMService:
     """
-    Service for interacting with OpenAI's language models.
-    This class centralizes all OpenAI API calls, providing consistent
-    error handling, response parsing, and configuration.
+    A service class that provides a unified interface for interacting with OpenAI's LLM APIs.
+    
+    This class encapsulates the common patterns for making requests to OpenAI,
+    handling responses, and dealing with errors. It provides methods for generating
+    both free-form text and structured JSON responses.
+    
+    Attributes:
+        client: The OpenAI client instance
+        default_model: The default model to use for requests
+        default_temperature: The default temperature setting for generation
+        default_max_tokens: The default maximum number of tokens for generation
     """
     
     def __init__(self, api_key: Optional[str] = None):
         """
-        Initialize the LLM service.
+        Initialize the LLMService with optional API key.
         
         Args:
-            api_key: Optional OpenAI API key. If not provided, will use OPENAI_API_KEY env var.
+            api_key: Optional API key for OpenAI. If not provided, it will use the 
+                    OPENAI_API_KEY environment variable.
         """
         # Set API key as environment variable if provided
         if api_key:
             os.environ["OPENAI_API_KEY"] = api_key
             
         # Initialize OpenAI client
-        self.client = OpenAI()
+        self.client = OpenAI(api_key=api_key or os.getenv("OPENAI_API_KEY"))
         
         # Default configuration
         self.default_model = "gpt-4o-mini"
@@ -49,40 +83,43 @@ class LLMService:
         Generate text using the OpenAI API.
         
         Args:
-            prompt: The user prompt to send to the model
-            system_message: Optional system message for role setup
-            model: LLM model to use (defaults to default_model)
-            temperature: Temperature setting (0.0 to 1.0)
-            max_tokens: Maximum tokens to generate
-            log_prompt: Whether to log the prompt for debugging
+            prompt: The user prompt to send to the API
+            system_message: Optional system message to set the behavior of the model
+            model: The model to use (defaults to self.default_model)
+            temperature: The temperature for generation (defaults to self.default_temperature)
+            max_tokens: Maximum tokens to generate (defaults to self.default_max_tokens)
+            log_prompt: Whether to log the prompt (defaults to True)
             
         Returns:
-            The generated text response
+            The generated text as a string, or None if an error occurred
+            
+        Example:
+            service = LLMService()
+            response = service.generate_text(
+                prompt="Explain quantum computing",
+                system_message="You are a physics professor."
+            )
         """
-        # Log the prompt if enabled
-        if log_prompt:
-            logger.info(f"LLM Prompt ({len(prompt)} chars):")
-            if len(prompt) > 500:
-                logger.info(f"{prompt[:250]}...{prompt[-250:]}")
-            else:
-                logger.info(prompt)
+        model = model or self.default_model
+        temperature = temperature if temperature is not None else self.default_temperature
+        max_tokens = max_tokens or self.default_max_tokens
         
-        # Set up the messages for the API call
         messages = []
         if system_message:
             messages.append({"role": "system", "content": system_message})
         messages.append({"role": "user", "content": prompt})
         
-        # Use provided values or defaults
-        model = model or self.default_model
-        temperature = temperature if temperature is not None else self.default_temperature
-        max_tokens = max_tokens or self.default_max_tokens
+        # Log using the special OpenAI logger if enabled
+        if log_prompt:
+            openai_logger.info(f"Generating text with {model} (temp={temperature:.1f}, max_tokens={max_tokens})")
+            
+            if system_message:
+                openai_logger.info(f"System message: {system_message}")
+                
+            openai_logger.info(f"User message: {prompt}")
         
         try:
-            # Log the API call details
-            logger.info(f"Calling OpenAI API with: model={model}, temperature={temperature}, max_tokens={max_tokens}")
-            
-            # Make the API call
+            logger.info(f"Calling OpenAI API with model {model}")
             response = self.client.chat.completions.create(
                 model=model,
                 messages=messages,
@@ -90,23 +127,27 @@ class LLMService:
                 max_tokens=max_tokens
             )
             
-            # Extract and return the response content
-            result = response.choices[0].message.content.strip()
-            logger.info(f"OpenAI API call completed successfully - Response length: {len(result)} chars")
-            
-            return result
-            
+            if response.choices and len(response.choices) > 0:
+                content = response.choices[0].message.content
+                
+                # Log a truncated version of the response
+                if log_prompt:
+                    openai_logger.info(f"Response: {content}")
+                
+                return content
+            else:
+                logger.warning("OpenAI API returned empty response")
+                return None
+                
         except RateLimitError as e:
-            logger.error(f"OpenAI rate limit exceeded: {e}")
-            raise
-            
+            logger.error(f"OpenAI rate limit exceeded: {str(e)}")
+            return None
         except APIError as e:
-            logger.error(f"OpenAI API error: {e}")
-            raise
-            
+            logger.error(f"OpenAI API error: {str(e)}")
+            return None
         except Exception as e:
-            logger.error(f"Error generating text with OpenAI: {e}")
-            raise
+            logger.error(f"Error calling OpenAI API: {str(e)}")
+            return None
     
     def generate_json(self, 
                      prompt: str, 
@@ -117,40 +158,77 @@ class LLMService:
                      temperature: Optional[float] = None, 
                      max_tokens: Optional[int] = None) -> Dict[str, Any]:
         """
-        Generate text and parse as JSON.
+        Generate text and parse it as JSON.
+        
+        This method adds specific instructions to the system message to ensure the
+        model returns properly formatted JSON. It also includes JSON parsing and cleaning.
         
         Args:
-            prompt: The user prompt to send to the model
-            system_message: Optional system message for role setup
-            fallback_response: Response to return if JSON parsing fails
-            clean_json: Whether to attempt cleaning common JSON issues
-            model: LLM model to use
-            temperature: Temperature setting
-            max_tokens: Maximum tokens to generate
+            prompt: The user prompt to send to the API
+            system_message: Optional base system message
+            fallback_response: Response to return if API call or JSON parsing fails
+            clean_json: Whether to attempt JSON cleaning if parsing fails (default: True)
+            model: The model to use (defaults to self.default_model)
+            temperature: The temperature setting (defaults to self.default_temperature)
+            max_tokens: Maximum tokens to generate (defaults to self.default_max_tokens)
             
         Returns:
-            The parsed JSON response as a dictionary
-        """
-        try:
-            # Generate the text response
-            response_text = self.generate_text(
-                prompt=prompt,
-                system_message=system_message or "You will respond with valid JSON only.",
-                model=model,
-                temperature=temperature,
-                max_tokens=max_tokens
+            The parsed JSON as a Python dict/list, or fallback_response if an error occurred
+            
+        Example:
+            service = LLMService()
+            data = service.generate_json(
+                prompt="List the capital cities of North America",
+                fallback_response={"cities": []}
             )
+        """
+        # Set default fallback response if none provided
+        if fallback_response is None:
+            fallback_response = {"error": "Failed to generate response"}
+        
+        # Add JSON formatting instructions to system message
+        json_system_msg = "You must respond with valid JSON only. No explanations or text outside of the JSON object."
+        if system_message:
+            system_message = f"{system_message}\n\n{json_system_msg}"
+        else:
+            system_message = json_system_msg
             
-            # Parse the response as JSON
-            return self._parse_json(response_text, clean=clean_json)
+        # Add JSON formatting hint to the prompt
+        json_prompt = f"{prompt}\n\nRespond with valid JSON only. The response must have a valid JSON structure."
+        
+        response_text = self.generate_text(
+            prompt=json_prompt,
+            system_message=system_message,
+            model=model,
+            temperature=temperature,
+            max_tokens=max_tokens
+        )
+        
+        if not response_text:
+            logger.warning("Failed to generate JSON response, using fallback")
+            return fallback_response
             
-        except Exception as e:
-            logger.error(f"Error generating JSON with OpenAI: {e}")
-            # Return fallback response if provided, otherwise re-raise
-            if fallback_response is not None:
-                logger.info(f"Using fallback JSON response")
-                return fallback_response
-            raise
+        # Log first 100 chars of response for debugging
+        logger.debug(f"Response from LLM (first 100 chars): {response_text[:100]}...")
+        
+        # Try parsing the JSON
+        parsed_json = self._parse_json(response_text, fallback_response, clean_json)
+        
+        # Check if parsing returned the fallback
+        if parsed_json == fallback_response:
+            logger.warning("JSON parsing failed, using fallback response")
+            # Try an alternative parsing strategy as a last resort
+            try:
+                # Look for anything that looks like a JSON object or array
+                json_match = re.search(r'(\{.*\}|\[.*\])', response_text, re.DOTALL)
+                if json_match:
+                    potential_json = json_match.group(1).strip()
+                    logger.debug(f"Attempting to parse extracted JSON: {potential_json[:100]}...")
+                    return json.loads(potential_json)
+            except Exception as e:
+                logger.debug(f"Alternative parsing failed: {e}")
+        
+        return parsed_json
     
     def create_embeddings(self, texts: Union[str, List[str]]) -> List[List[float]]:
         """
@@ -185,19 +263,17 @@ class LLMService:
             logger.error(f"Error creating embeddings: {e}")
             raise
     
-    def _parse_json(self, json_text: str, clean: bool = True) -> Dict[str, Any]:
+    def _parse_json(self, json_text: str, fallback_response: Optional[Dict[str, Any]] = None, clean: bool = True) -> Dict[str, Any]:
         """
-        Parse a string as JSON, with optional cleaning for common issues.
+        Parse text as JSON, with optional cleaning for common issues.
         
         Args:
             json_text: The JSON string to parse
-            clean: Whether to attempt cleaning common JSON issues
+            fallback_response: Response to return if parsing fails
+            clean: Whether to attempt cleaning if parsing fails (default: True)
             
         Returns:
-            Parsed JSON as a dictionary
-            
-        Raises:
-            json.JSONDecodeError: If JSON parsing fails
+            The parsed JSON as a Python dict/list, or fallback_response if parsing failed
         """
         # Extract JSON from markdown code blocks if present
         if json_text.startswith("```json"):
@@ -212,8 +288,19 @@ class LLMService:
         # Basic cleanup
         json_text = json_text.strip()
         
-        # Optional advanced cleaning for common JSON issues
-        if clean:
+        # First attempt direct parsing without cleaning
+        try:
+            return json.loads(json_text)
+        except json.JSONDecodeError as e:
+            # If direct parsing fails, try with cleaning if enabled
+            if not clean:
+                logger.error(f"JSON parsing error (no cleaning attempted): {e}")
+                logger.error(f"Problematic JSON text: {json_text}")
+                return fallback_response
+                
+            # Try advanced cleaning methods
+            logger.debug(f"Initial JSON parsing failed, attempting cleaning...")
+            
             # Fix trailing commas which are invalid in JSON but common in JavaScript
             json_text = re.sub(r',(\s*[\}\]])', r'\1', json_text)
             
@@ -223,11 +310,14 @@ class LLMService:
             # Fix single quotes to double quotes if needed
             if "'" in json_text and '"' not in json_text:
                 json_text = json_text.replace("'", '"')
-        
-        # Parse JSON
-        try:
-            return json.loads(json_text)
-        except json.JSONDecodeError as e:
-            logger.error(f"JSON parsing error: {e}")
-            logger.error(f"Problematic JSON text: {json_text}")
-            raise 
+                
+            # Remove any JavaScript comments
+            json_text = re.sub(r'//.*?\n|/\*.*?\*/', '', json_text, flags=re.DOTALL)
+            
+            # Try second parsing attempt after cleaning
+            try:
+                return json.loads(json_text)
+            except json.JSONDecodeError as e:
+                logger.error(f"JSON parsing error after cleaning: {e}")
+                logger.error(f"Problematic JSON text after cleaning: {json_text}")
+                return fallback_response 

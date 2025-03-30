@@ -6,27 +6,75 @@ import os
 import logging
 import json
 from datetime import datetime
+import logging.handlers
 
 def setup_logging(level=logging.INFO):
-    """Set up logging configuration."""
+    """
+    Set up logging configuration with improved organization and focus.
+    
+    Args:
+        level: The default logging level (default: INFO)
+    """
     # Ensure log directory exists
     os.makedirs('logs', exist_ok=True)
     
-    # Configure root logger
-    logging.basicConfig(
-        level=level,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
+    # Create formatter for different log types
+    detailed_formatter = logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        '%Y-%m-%d %H:%M:%S'
     )
     
-    # Create a special handler for OpenAI prompts and responses
-    openai_handler = logging.FileHandler('logs/openai_prompts.log')
+    simple_formatter = logging.Formatter(
+        '%(asctime)s - %(levelname)s - %(message)s',
+        '%Y-%m-%d %H:%M:%S'
+    )
+    
+    # Configure root logger (console handler)
+    root_logger = logging.getLogger()
+    root_logger.setLevel(level)
+    
+    # Clear existing handlers if any
+    if root_logger.handlers:
+        for handler in root_logger.handlers:
+            root_logger.removeHandler(handler)
+    
+    # Console handler - shows important logs in the console
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    console_handler.setFormatter(simple_formatter)
+    root_logger.addHandler(console_handler)
+    
+    # File handler with rotation - main app logs
+    file_handler = logging.handlers.RotatingFileHandler(
+        'logs/app.log',
+        maxBytes=10*1024*1024,  # 10MB
+        backupCount=3
+    )
+    file_handler.setLevel(level)
+    file_handler.setFormatter(detailed_formatter)
+    root_logger.addHandler(file_handler)
+    
+    # Dedicated handler for OpenAI prompts with rotation
+    openai_handler = logging.handlers.RotatingFileHandler(
+        'logs/openai_prompts.log',
+        maxBytes=5*1024*1024,  # 5MB
+        backupCount=2
+    )
     openai_handler.setLevel(logging.INFO)
     openai_handler.setFormatter(logging.Formatter('%(asctime)s - %(message)s', '%Y-%m-%d %H:%M:%S'))
     
-    # Add this handler only to the recommender logger
-    openai_logger = logging.getLogger('app.recommender')
+    # Create OpenAI logger
+    openai_logger = logging.getLogger('openai.prompt')
+    openai_logger.propagate = False  # Prevent duplicate logging
     openai_logger.addHandler(openai_handler)
+    
+    # Set more specific log levels for verbose libraries
+    logging.getLogger('httpx').setLevel(logging.WARNING)
+    logging.getLogger('urllib3').setLevel(logging.WARNING)
+    
+    # Register logging completion
+    logging.info("Logging configured at level %s", logging.getLevelName(level))
+    logging.info("OpenAI prompt logging enabled at level %s", logging.getLevelName(logging.INFO))
 
 def save_to_json(data, filename):
     """Save data to a JSON file."""

@@ -1,15 +1,52 @@
-# TV Show Recommender
+# TV Recommender
 
-A self-hosted TV show recommendation system that analyzes your Trakt.tv watch history, enriches it with TMDB metadata, builds a taste profile, and uses OpenAI to generate personalized TV show recommendations.
+A personalized TV show recommendation system that uses your Trakt.tv watch history and LLMs to generate tailored recommendations.
+
+## Recent Updates
+
+The codebase has undergone significant refactoring to improve maintainability and follow best practices:
+
+- Created dedicated service classes for API interactions:
+  - `TMDBClient`: Handles all TMDB API interactions
+  - `LLMService`: Manages OpenAI API interactions
+  - `PromptEngineering`: Creates and formats prompts for LLMs
+  
+- Refactored main business classes to use the new services:
+  - `Recommender`: Now focuses on orchestrating the recommendation process
+  - `ProfileBuilder`: Now focuses on building user taste profiles
+
+See the [REFACTORING.md](./REFACTORING.md) file for detailed information about these changes.
+
+## Architecture
+
+The application uses a layered architecture with clear separation of concerns:
+
+- **Business Logic Layer**: `Recommender` and `ProfileBuilder` classes
+- **Service Layer**: `TMDBClient`, `LLMService`, and `PromptEngineering` classes
+- **External API Layer**: TMDB and OpenAI APIs
+
+See the [architecture.md](./architecture.md) file for more details and diagrams.
 
 ## Features
 
-- Fetches your watch history from Trakt.tv
-- Enriches show data with metadata from TMDB (The Movie Database)
-- Builds a detailed taste profile based on your viewing preferences
-- Retrieves trending and unseen shows as recommendation candidates
-- Uses OpenAI's API to generate personalized recommendations
-- Displays results on a beautiful web interface
+- Analyzes your Trakt.tv watch history to build a detailed taste profile
+- Discovers candidate shows from various sources (trending, similar shows, etc.)
+- Uses LLMs to generate personalized recommendations with explanations
+- Provides detailed information about recommended shows
+
+## Getting Started
+
+1. Clone the repository
+2. Set up your API keys:
+   - `OPENAI_API_KEY`: Your OpenAI API key
+   - `TMDB_API_KEY`: Your TMDB API key
+   - `TRAKT_CLIENT_ID`: Your Trakt.tv client ID
+3. Install dependencies: `pip install -r requirements.txt`
+4. Run the application: `python app.py`
+
+## Contributing
+
+Contributions are welcome! Please see the [CONTRIBUTING.md](./CONTRIBUTING.md) file for details.
 
 ## Requirements
 

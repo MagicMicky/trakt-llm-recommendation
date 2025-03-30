@@ -62,21 +62,9 @@ class AffinityScorer:
         """
         logger.info(f"Calculating affinity scores for {len(watched_shows)} shows")
         
-        # Add debug logging for input data
+        # Add focused logging for input data
         if watch_history:
             logger.info(f"Watch history provided for {len(watch_history)} shows")
-            # Sample a show to check data structure
-            if watch_history:
-                sample_show_id = next(iter(watch_history))
-                sample_history = watch_history[sample_show_id]
-                if sample_history:
-                    logger.info(f"Sample watch history for show {sample_show_id}: {len(sample_history)} episodes")
-                    logger.info(f"Sample episode data: {sample_history[0] if sample_history else 'None'}")
-                    
-                    # Check episode structure more carefully
-                    if sample_history and 'episode' in sample_history[0]:
-                        episode_info = sample_history[0]['episode']
-                        logger.info(f"Episode structure details: {episode_info}")
         
         if ratings:
             logger.info(f"Ratings provided for {len(ratings)} shows")
@@ -87,8 +75,6 @@ class AffinityScorer:
             for rating in ratings:
                 if 'show' in rating and 'ids' in rating['show'] and 'trakt' in rating['show']['ids']:
                     ratings_map[rating['show']['ids']['trakt']] = rating.get('rating', 0)
-            
-            logger.info(f"Mapped {len(ratings_map)} ratings to show IDs")
         
         # Process each show
         enriched_shows = []
@@ -126,6 +112,9 @@ class AffinityScorer:
             adjusted_watched_episodes = affinity_data.get('metrics', {}).get('watched_episodes', 0)
             if adjusted_watched_episodes != original_watched_episodes:
                 shows_with_adjusted_episode_count += 1
+                # Log specific adjustments for shows with significant differences
+                if abs(adjusted_watched_episodes - original_watched_episodes) > 2:
+                    logger.info(f"Adjusted episode count for '{show.get('title')}': {original_watched_episodes} → {adjusted_watched_episodes}")
             
             total_episode_count_after += adjusted_watched_episodes
             
@@ -133,38 +122,10 @@ class AffinityScorer:
             enriched_show = {**show, 'affinity': affinity_data}
             enriched_shows.append(enriched_show)
         
-        # Add detailed diagnostic logging about episode count adjustments
-        logger.info(f"Episode count statistics:")
-        logger.info(f"  - Shows with adjusted episode counts: {shows_with_adjusted_episode_count}/{len(watched_shows)}")
-        logger.info(f"  - Total episodes before adjustment: {total_episode_count_before}")
-        logger.info(f"  - Total episodes after adjustment: {total_episode_count_after}")
-        logger.info(f"  - Difference: {total_episode_count_after - total_episode_count_before}")
+        # Add focused summary of episode count adjustments
+        if shows_with_adjusted_episode_count > 0:
+            logger.info(f"Adjusted episode counts for {shows_with_adjusted_episode_count} shows (+{total_episode_count_after - total_episode_count_before} total episodes)")
         
-        # Log detailed stats about the affinity scores
-        favorite_count = len(self.get_favorites(enriched_shows))
-        binged_count = len(self.get_binged_shows(enriched_shows))
-        dropped_count = len(self.get_dropped_shows(enriched_shows))
-        completed_count = len(self.get_completed_shows(enriched_shows))
-        
-        # If we have no favorites, binged or dropped shows, log more details for debugging
-        if favorite_count == 0 and binged_count == 0 and dropped_count == 0:
-            # Log the top 5 scores to see how close they are to thresholds
-            scores = [(s.get('title', 'Unknown'), 
-                      s.get('affinity', {}).get('score', 0),
-                      s.get('affinity', {}).get('flags', {})) 
-                     for s in enriched_shows if 'affinity' in s]
-            scores.sort(key=lambda x: x[1], reverse=True)
-            
-            logger.info("Top 5 affinity scores:")
-            for i, (title, score, flags) in enumerate(scores[:5]):
-                logger.info(f"  {i+1}. {title}: Score={score}, Flags={flags}")
-                
-            # Check how many shows have time span data (needed for binge detection)
-            shows_with_timespan = sum(1 for s in enriched_shows 
-                                     if s.get('affinity', {}).get('metrics', {}).get('watch_time_span_days') is not None)
-            logger.info(f"Only {shows_with_timespan} out of {len(enriched_shows)} shows have watch time span data")
-        
-        logger.info(f"Affinity scores calculated for {len(enriched_shows)} shows")
         return enriched_shows
     
     def _calculate_show_affinity(self, 
@@ -236,12 +197,56 @@ class AffinityScorer:
             # Update watched_episodes count
             watched_episodes_from_history = len(unique_episodes)
             if watched_episodes_from_history > 0:
-                # Log for diagnostic purposes
-                logger.debug(f"Updating watched episodes for '{show.get('title')}': {watched_episodes} → {watched_episodes_from_history}")
+                previous_count = watched_episodes
                 watched_episodes = watched_episodes_from_history
+                
+                # Log adjustments with appropriate verbosity based on the significance
+                if abs(previous_count - watched_episodes_from_history) > 10:
+                    # Major difference - use INFO level
+                    logger.info(f"Adjusted episode count for '{show.get('title')}': {previous_count} → {watched_episodes_from_history}")
+                elif abs(previous_count - watched_episodes_from_history) > 2:
+                    # Moderate difference - use DEBUG level
+                    logger.debug(f"Updating watched episodes for '{show.get('title')}': {previous_count} → {watched_episodes_from_history}")
+                
+                # Check if we might be hitting the episode history limit
+                if len(episode_history) >= 100 and watched_episodes_from_history >= 90:
+                    logger.warning(f"Possible incomplete history for '{show.get('title')}': {watched_episodes_from_history} episodes from {len(episode_history)} history records")
+                
+                # For any show approaching the 500 limit set in main.py, consider it a completionist
+                if len(episode_history) >= 450:
+                    logger.info(f"Show '{show.get('title')}' is hitting episode limit - Treating as completionist")
+                    show['is_hitting_episode_limit'] = True
+                    total_episodes = watched_episodes_from_history  # Set total to match watched for 100% completion
+                
+                # Update the show object with the corrected watched_episodes count
+                show['watched_episodes'] = watched_episodes_from_history
+                
+                # Handle long-running shows with potentially incomplete history
+                # For known long-running shows, we might need special handling
+                known_long_shows = {
+                    "The Simpsons": 700,
+                    "South Park": 300,
+                    "Family Guy": 400,
+                    "Grey's Anatomy": 400,
+                    "NCIS": 450,
+                    "Law & Order: Special Victims Unit": 500,
+                    "One Piece": 1000,
+                    "Naruto": 700,
+                    "Doctor Who": 850
+                }
+                
+                show_title = show.get('title', '')
+                if show_title in known_long_shows:
+                    if watched_episodes_from_history < 50 and len(episode_history) >= 90:
+                        logger.warning(f"Known long-running show '{show_title}' has suspiciously low episode count: {watched_episodes_from_history}")
+                    
+                    # Override the flag with a more specific one for known long-running shows
+                    if len(episode_history) >= 450:  # Within 50 of the 500 limit set in main.py
+                        logger.info(f"Reached episode limit for long-running show '{show_title}' - Assuming completionist status")
+                        show['is_long_running_with_limited_history'] = True
         
         # Calculate basic metrics
-        completion_ratio = self._calculate_completion_ratio(watched_episodes, total_episodes)
+        completion_ratio = self._calculate_completion_ratio(watched_episodes, total_episodes, show)
         time_span = self._calculate_watch_time_span(episode_history)
         binge_score = self._calculate_binge_score(time_span, watched_episodes)
         
@@ -318,7 +323,7 @@ class AffinityScorer:
         
         return affinity_data
     
-    def _calculate_completion_ratio(self, watched_episodes: int, total_episodes: int) -> float:
+    def _calculate_completion_ratio(self, watched_episodes: int, total_episodes: int, show: Optional[Dict[str, Any]] = None) -> float:
         """
         Calculate the ratio of watched episodes to total episodes.
         Handles cases where total_episodes might be unknown.
@@ -326,10 +331,20 @@ class AffinityScorer:
         Args:
             watched_episodes: Number of episodes watched
             total_episodes: Total episodes in the show
+            show: Optional show data to check for special flags
             
         Returns:
             Completion ratio (0.0-1.0)
         """
+        # Handle our special cases for shows where we've hit the API limit
+        if show:
+            if show.get('is_long_running_with_limited_history', False):
+                logger.debug(f"Using adjusted completion ratio for known long-running show '{show.get('title', 'Unknown')}'")
+                return 1.0
+            elif show.get('is_hitting_episode_limit', False):
+                logger.debug(f"Using adjusted completion ratio for show '{show.get('title', 'Unknown')}' that hit the episode limit")
+                return 1.0
+            
         if not total_episodes or total_episodes <= 0:
             # If we don't know the total, assume whatever they watched is what exists
             return 1.0

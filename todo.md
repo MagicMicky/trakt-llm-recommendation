@@ -42,30 +42,8 @@ Missing:
 
 
 
+* I think there's some issues in how some criterias are calculated.
+  => Including binge
 
-  Missing Elements to Enhance Recommendations
-After reviewing your code, here are key enhancements that could make recommendations more meaningful without requiring additional user input:
-1. Temporal Analysis of Watching Patterns
-Binge Detection: Analyze how quickly users consume shows (binge vs. spread out)
-Taste Evolution: Track how preferences change over time to identify emerging interests
-Viewing Context: Detect what time of day/week certain content is consumed
-2. Collaborative Filtering Component
-Similar User Networks: Find Trakt users with comparable taste profiles
-Cross-User Recommendations: Incorporate highly-rated shows from similar users
-Community Trend Analysis: Identify shows gaining traction among users with similar taste clusters
-3. Content Lifecycle Awareness
-Currently Airing Tracking: Distinguish between completed shows and those with upcoming episodes
-Season Positioning: Consider where shows are in their lifecycle (new season coming soon)
-Content Freshness: Prioritize recommendations for shows that have recently added seasons
-4. Enhanced Metadata Integration
-Additional APIs: Supplement TMDB with data from other sources (IMDb, Rotten Tomatoes)
-Deeper Content Analysis: Incorporate data on show pacing, tone, complexity, and storytelling style
-Critical Reception: Include professional review aggregation beyond user ratings
-5. Recommendation Feedback Loop
-Recommendation Tracking: Monitor which recommendations are actually watched
-Implicit Feedback Analysis: Learn from user interactions with recommendations
-Success Rate Optimization: Refine recommendation strategies based on adoption rates
-6. Content Release Calendar Integration
-Upcoming Release Awareness: Flag when new seasons of watched shows are coming
-Preemptive Recommendations: Suggest shows to watch before related content releases
-These enhancements could be implemented incrementally, with the feedback loop being perhaps the most impactful immediate addition to create a self-improving system.
+
+* It's taking all announced episode as total for show ie: doctor who says 16 but there's only 8

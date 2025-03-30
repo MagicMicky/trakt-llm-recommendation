@@ -7,9 +7,11 @@ import os
 import collections
 import tqdm
 import re
+import datetime
 from typing import Dict, List, Any, Optional
 from statistics import mean
 from app.llm_service import LLMService
+from app.prompt_engineering import PromptEngineering
 from app.utils import load_from_json, save_to_json
 from .affinity_scorer import AffinityScorer
 
@@ -30,6 +32,9 @@ class ProfileBuilder:
         """
         # Initialize the LLM service
         self.llm_service = LLMService(api_key=openai_api_key)
+        
+        # Initialize the PromptEngineering service
+        self.prompt_engineering = PromptEngineering()
         
         # Initialize other properties
         self.watched_shows = watched_shows or []
@@ -85,61 +90,37 @@ class ProfileBuilder:
                     
                 logger.info(f"Saved affinity data for {len(affinity_data)} shows to data/affinity_scores.json")
                 
-                # Log detailed information about completion ratios for diagnosis
-                completion_ratios = [(
-                    show.get('title', 'Unknown'),
-                    show.get('affinity', {}).get('metrics', {}).get('completion_ratio', 0),
-                    show.get('affinity', {}).get('metrics', {}).get('watched_episodes', 0),
-                    show.get('affinity', {}).get('metrics', {}).get('total_episodes', 0),
-                    show.get('affinity', {}).get('flags', {}).get('is_completed', False)
-                ) for show in shows if 'affinity' in show]
+                # Log only the critical information about completion ratios for diagnosis
+                inconsistent = [
+                    (show.get('title', 'Unknown'),
+                     show.get('affinity', {}).get('metrics', {}).get('completion_ratio', 0),
+                     show.get('affinity', {}).get('metrics', {}).get('watched_episodes', 0),
+                     show.get('affinity', {}).get('metrics', {}).get('total_episodes', 0))
+                    for show in shows 
+                    if ('affinity' in show and 
+                        show.get('affinity', {}).get('metrics', {}).get('completion_ratio', 0) >= 0.8 and 
+                        not show.get('affinity', {}).get('flags', {}).get('is_completed', False))
+                ]
                 
-                # Sort by completion ratio
-                completion_ratios.sort(key=lambda x: x[1], reverse=True)
-                
-                logger.info("Top 10 shows by completion ratio:")
-                for i, (title, ratio, watched, total, completed) in enumerate(completion_ratios[:10], 1):
-                    logger.info(f"  {i}. {title}: {ratio:.2f} - {watched}/{total} episodes - Completed: {completed}")
-                
-                # Check for shows with inconsistent completion ratios (high ratio but not marked completed)
-                inconsistent = [(title, ratio, watched, total) for title, ratio, watched, total, completed in completion_ratios 
-                               if ratio >= 0.8 and not completed]
                 if inconsistent:
-                    logger.warning(f"Found {len(inconsistent)} shows with high completion ratio (≥0.8) but not marked as completed:")
-                    for title, ratio, watched, total in inconsistent[:5]:  # Show first 5 examples
-                        logger.warning(f"  {title}: {ratio:.2f} - {watched}/{total} episodes")
+                    logger.warning(f"Found {len(inconsistent)} shows with high completion ratio (≥0.8) but not marked as completed")
+                    if len(inconsistent) <= 5:
+                        for title, ratio, watched, total in inconsistent:
+                            logger.warning(f"  {title}: {ratio:.2f} - {watched}/{total} episodes")
+                    else:
+                        logger.warning(f"  First 5 examples of {len(inconsistent)} total inconsistencies")
+                        for title, ratio, watched, total in inconsistent[:5]:
+                            logger.warning(f"  {title}: {ratio:.2f} - {watched}/{total} episodes")
             except Exception as e:
                 logger.error(f"Error saving affinity data to JSON: {e}")
             
-            # Log some affinity stats if scores were calculated
+            # Log summary of affinity analysis
             if any('affinity' in show for show in shows):
                 favorite_count = len(self.affinity_scorer.get_favorites(shows))
                 binged_count = len(self.affinity_scorer.get_binged_shows(shows))
                 dropped_count = len(self.affinity_scorer.get_dropped_shows(shows))
                 
-                logger.info(f"Affinity analysis identified: {favorite_count} favorites, "
-                           f"{binged_count} binged shows, {dropped_count} dropped shows")
-                
-                # Add additional analysis using the potential completionist method
-                potential_completionist = len(self.affinity_scorer.get_potential_completionist_shows(shows))
-                logger.info(f"Additional analysis found {potential_completionist} potential completionist shows")
-                
-                # Check scores distribution to see if thresholds might need adjustment
-                scores = [show.get('affinity', {}).get('score', 0) for show in shows if 'affinity' in show]
-                if scores:
-                    scores.sort(reverse=True)
-                    logger.info(f"Top affinity scores: {scores[:10]}")
-                    logger.info(f"Score distribution - min: {min(scores)}, max: {max(scores)}, "
-                               f"avg: {sum(scores)/len(scores):.2f}")
-                    
-                    # Count shows by score range
-                    score_ranges = {
-                        "high (≥7)": sum(1 for s in scores if s >= 7),
-                        "good (5-6)": sum(1 for s in scores if 5 <= s < 7),
-                        "neutral (0-4)": sum(1 for s in scores if 0 <= s < 5),
-                        "negative (<0)": sum(1 for s in scores if s < 0)
-                    }
-                    logger.info(f"Score ranges: {score_ranges}")
+                logger.info(f"Affinity analysis: {favorite_count} favorites, {binged_count} binged shows, {dropped_count} dropped shows")
         
         # Initialize counters for various attributes
         genre_counter = collections.Counter()
@@ -238,6 +219,41 @@ class ProfileBuilder:
         
         return profile
     
+    def _clean_cache_directory(self) -> None:
+        """
+        Clean up potentially corrupted cluster cache files.
+        This helps avoid issues with invalid cache files causing errors.
+        """
+        try:
+            cache_dir = 'data'
+            if not os.path.exists(cache_dir):
+                return
+                
+            # Look for taste cluster cache files
+            cluster_cache_pattern = 'taste_clusters_'
+            files_to_check = [f for f in os.listdir(cache_dir) 
+                             if f.startswith(cluster_cache_pattern) and f.endswith('.json')]
+            
+            for cache_file in files_to_check:
+                file_path = os.path.join(cache_dir, cache_file)
+                try:
+                    # Try to load the file
+                    with open(file_path, 'r') as f:
+                        cache_data = json.load(f)
+                    
+                    # Check for minimum required structure
+                    if not isinstance(cache_data, dict) or 'clusters' not in cache_data:
+                        logger.warning(f"Removing invalid cache file {file_path}")
+                        os.remove(file_path)
+                        
+                except (json.JSONDecodeError, IOError) as e:
+                    # If we can't read it as JSON or there's an IO error, it's corrupted
+                    logger.warning(f"Removing corrupted cache file {file_path}: {e}")
+                    os.remove(file_path)
+                    
+        except Exception as e:
+            logger.error(f"Error cleaning cache directory: {e}")
+
     def build_clusters(self, shows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
         Build taste clusters from the user's watched shows.
@@ -250,6 +266,9 @@ class ProfileBuilder:
         """
         logger.info("Building taste clusters from watch history")
         
+        # Clean up potentially corrupted cache files first
+        self._clean_cache_directory()
+        
         # Check for cached clusters
         cache_file = 'data/taste_clusters_cache.json'
         cached_clusters = self._get_cached_clusters(cache_file, shows)
@@ -257,45 +276,43 @@ class ProfileBuilder:
             logger.info("Using cached taste clusters")
             return cached_clusters
             
-        # Check if we've had a recent failure to avoid hitting the API again too soon
-        failure_file = 'data/taste_clusters_failure.txt'
-        if os.path.exists(failure_file):
-            try:
-                # Check when the last failure was
-                failure_timestamp = os.path.getmtime(failure_file)
-                current_time = datetime.datetime.now().timestamp()
-                
-                # If it's been less than 1 hour since the last failure, use the fallback
-                if current_time - failure_timestamp < 3600:  # 3600 seconds = 1 hour
-                    logger.info("Recent clustering failure detected, using fallback clusters")
-                    shows_data = self._prepare_shows_for_clustering(shows)
-                    clusters = self._generate_fallback_clusters(shows_data)
-                    self._cache_clusters(clusters, cache_file, shows)
-                    return clusters
-            except Exception as e:
-                logger.error(f"Error checking failure timestamp: {e}")
-                # Continue with normal flow if error checking timestamp
-        
-        # Prepare show data for clustering
-        shows_data = self._prepare_shows_for_clustering(shows)
+        # Log the number of shows being clustered
+        logger.info(f"Using all {len(shows)} shows for taste clustering")
         
         # Use OpenAI to identify clusters
         try:
-            clusters = self._cluster_shows(min_shows_per_cluster=3, max_clusters=5, reclustering_allowed=True)
+            cluster_result = self._cluster_shows(shows, min_shows_per_cluster=3, max_clusters=5, reclustering_allowed=True)
             
             # If successful, remove the failure marker if it exists
+            failure_file = 'data/taste_clusters_failure.txt'
             if os.path.exists(failure_file):
                 try:
                     os.remove(failure_file)
                     logger.info("Removed taste clustering failure marker")
                 except Exception as e:
                     logger.error(f"Error removing failure marker: {e}")
-                    
-            # Cache the clusters
-            self._cache_clusters(clusters, cache_file, shows)
             
-            logger.info(f"Built {len(clusters)} taste clusters")
-            return clusters
+            # Extract the clusters from the result (which should be a dict with 'clusters' key)
+            if isinstance(cluster_result, dict) and 'clusters' in cluster_result:
+                clusters = cluster_result.get('clusters', [])
+            else:
+                # If we somehow got an unexpected result type, use it directly if it's a list
+                clusters = cluster_result if isinstance(cluster_result, list) else []
+                logger.warning(f"Unexpected result type from _cluster_shows: {type(cluster_result)}")
+            
+            # Validate that all clusters are dictionaries
+            valid_clusters = []
+            for cluster in clusters:
+                if isinstance(cluster, dict):
+                    valid_clusters.append(cluster)
+                else:
+                    logger.warning(f"Skipping invalid cluster: {type(cluster)}")
+            
+            # Cache the valid clusters
+            self._cache_clusters(valid_clusters, cache_file, shows)
+            
+            logger.info(f"Built {len(valid_clusters)} taste clusters")
+            return valid_clusters
             
         except Exception as e:
             logger.error(f"Error in taste cluster generation process: {e}")
@@ -310,9 +327,18 @@ class ProfileBuilder:
                 logger.error(f"Error writing failure marker: {write_err}")
             
             # Use fallback clustering instead
+            shows_data = self._prepare_shows_for_clustering(shows)
             clusters = self._generate_fallback_clusters(shows_data)
+            
+            # Cache the clusters
             self._cache_clusters(clusters, cache_file, shows)
-            return clusters
+            
+            # Return the clusters, ensuring they're all dictionaries
+            valid_clusters = [c for c in clusters if isinstance(c, dict)]
+            if len(valid_clusters) < len(clusters):
+                logger.warning(f"Filtered out {len(clusters) - len(valid_clusters)} invalid clusters from fallback")
+                
+            return valid_clusters
     
     def _prepare_shows_for_clustering(self, shows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
@@ -334,10 +360,32 @@ class ProfileBuilder:
             affinity_score = affinity_data.get('score', 0)
             affinity_flags = affinity_data.get('flags', {})
             
+            # Extract genres based on data structure
+            genres = []
+            raw_genres = tmdb_data.get('genres', [])
+            if raw_genres:
+                # Handle both list of strings and list of dicts
+                for genre in raw_genres:
+                    if isinstance(genre, dict) and 'name' in genre:
+                        genres.append(genre['name'])
+                    elif isinstance(genre, str):
+                        genres.append(genre)
+            
+            # Extract keywords based on data structure
+            keywords = []
+            raw_keywords = tmdb_data.get('keywords', [])
+            if raw_keywords:
+                # Handle both list of strings and list of dicts
+                for keyword in raw_keywords:
+                    if isinstance(keyword, dict) and 'name' in keyword:
+                        keywords.append(keyword['name'])
+                    elif isinstance(keyword, str):
+                        keywords.append(keyword)
+            
             prepared_show = {
-                'title': show.get('title', 'Unknown'),
-                'genres': tmdb_data.get('genres', []),
-                'keywords': tmdb_data.get('keywords', []),
+                'title': show.get('title', show.get('name', 'Unknown')),
+                'genres': genres,
+                'keywords': keywords,
                 'overview': tmdb_data.get('overview', ''),
                 'first_air_date': tmdb_data.get('first_air_date', ''),
                 'vote_average': tmdb_data.get('vote_average', 0),
@@ -352,16 +400,17 @@ class ProfileBuilder:
             prepared_shows.append(prepared_show)
         
         # Log the total number of shows being used for clustering
-        logger.info(f"Using all {len(prepared_shows)} shows for taste clustering")
+        logger.info(f"Prepared {len(prepared_shows)} shows for clustering")
         
         return prepared_shows
     
-    def _cluster_shows(self, min_shows_per_cluster: int = 3, max_clusters: int = 5,
-                        reclustering_allowed: bool = True) -> Dict[str, Any]:
+    def _cluster_shows(self, shows: List[Dict[str, Any]], min_shows_per_cluster: int = 3, max_clusters: int = 5,
+                       reclustering_allowed: bool = True) -> Dict[str, Any]:
         """
         Cluster shows based on their descriptive text.
         
         Args:
+            shows: List of shows to cluster
             min_shows_per_cluster: Minimum shows per cluster
             max_clusters: Maximum number of clusters
             reclustering_allowed: Whether reclustering is allowed
@@ -369,92 +418,90 @@ class ProfileBuilder:
         Returns:
             Dictionary with clustering results
         """
-        # Try to get cached clusters first for faster loading
-        cached_results = self._get_cached_clusters(min_shows_per_cluster, max_clusters)
+        # Use a proper cache file path instead of integer parameters
+        cache_file = f'data/taste_clusters_{min_shows_per_cluster}_{max_clusters}_cache.json'
+        cached_results = self._get_cached_clusters(cache_file, shows)
         if cached_results:
             return cached_results
+            
+        # Check if we've had a recent failure to avoid hitting the API again too soon
+        failure_file = 'data/taste_clusters_failure.txt'
+        if os.path.exists(failure_file):
+            try:
+                # Check when the last failure was
+                failure_timestamp = os.path.getmtime(failure_file)
+                current_time = datetime.datetime.now().timestamp()
+                
+                # If it's been less than 1 hour since the last failure, use the fallback
+                if current_time - failure_timestamp < 3600:  # 3600 seconds = 1 hour
+                    logger.info("Recent clustering failure detected, using fallback clusters")
+                    shows_data = self._prepare_shows_for_clustering(shows)
+                    clusters = self._generate_fallback_clusters(shows_data)
+                    self._cache_clusters(clusters, cache_file, shows)
+                    return {"clusters": clusters}
+            except Exception as e:
+                logger.error(f"Error checking failure timestamp: {e}")
+                # Continue with normal flow if error checking timestamp
         
         # Prepare data for clustering with OpenAI
         watched_data = []
-        for show in self.watched_shows:
+        for show in shows:
+            tmdb_data = show.get('tmdb_data', {})
             watched_data.append({
                 "id": show.get("tmdb_id"),
-                "title": show.get("name"),
-                "overview": show.get("overview", ""),
-                "genres": ", ".join(genre["name"] for genre in show.get("genres", [])),
-                "first_air_date": show.get("first_air_date", ""),
-                "vote_average": show.get("vote_average", 0),
+                "title": show.get("title", "Unknown"),
+                "overview": tmdb_data.get("overview", ""),
+                "genres": [genre for genre in tmdb_data.get("genres", [])],
+                "first_air_date": tmdb_data.get("first_air_date", ""),
+                "vote_average": tmdb_data.get("vote_average", 0),
                 "watched_ratio": show.get("watched_ratio", 0),
                 "rating": show.get("rating", 0)
             })
+            
+        # Log some information about the data we're sending
+        logger.info(f"Sending {len(watched_data)} shows to OpenAI for clustering")
+        if len(watched_data) > 0:
+            logger.debug(f"Sample show data: {watched_data[0]}")
+        else:
+            logger.error("No show data available for clustering")
+            # Fall back to genre-based clustering if we have no shows
+            shows_data = self._prepare_shows_for_clustering(shows)
+            fallback_clusters = self._generate_fallback_clusters(shows_data)
+            return {"clusters": fallback_clusters}
         
-        # Construct the prompt for OpenAI
-        prompt = f"""
-I need to analyze a user's TV watching history to identify their main taste clusters. Each cluster should represent a distinct preference pattern.
-
-# WATCHED SHOWS DATA
-```
-{json.dumps(watched_data, indent=2)}
-```
-
-Analyze this data and identify {max_clusters} distinct taste clusters (or fewer if appropriate). Each cluster should represent a coherent group of shows that share important characteristics which might explain why the user enjoys them.
-
-Consider these factors when creating clusters:
-1. Genre combinations and sub-genres
-2. Themes, tones, and narrative styles
-3. Character types and relationships
-4. Time periods and settings
-5. Creative teams (if patterns exist)
-6. Viewing patterns (shows with high watch completion vs. partial viewing)
-7. User ratings (if available)
-
-For each cluster:
-1. Give it a descriptive name that captures its essence (e.g. "Character-Driven Sci-Fi Drama" rather than just "Sci-Fi")
-2. List the show IDs that belong to this cluster
-3. Provide a detailed explanation of what unifies these shows, focusing on specific elements likely to appeal to the user
-4. Describe the viewing experience or emotional satisfaction this cluster provides
-
-Rules:
-- Each show MUST be assigned to exactly ONE cluster
-- Each cluster MUST contain at least {min_shows_per_cluster} shows
-- Create only as many clusters as needed (maximum {max_clusters})
-- Strongly favor clusters with at least {min_shows_per_cluster} shows
-- Name clusters based on content patterns, not viewing behaviors
-- Avoid clusters that solely reflect networks, platforms or release years
-- Focus on WHY the user enjoys these shows, not just their surface-level categorization
-
-Your response should be valid JSON in this exact format:
-{{
-  "clusters": [
-    {{
-      "name": "Descriptive Cluster Name",
-      "show_ids": [123, 456, 789],
-      "explanation": "Detailed explanation of what unifies these shows...",
-      "viewing_experience": "Description of the viewing experience or emotional satisfaction..."
-    }},
-    ...more clusters...
-  ],
-  "profile_summary": "An overall analysis of this viewer's TV watching preferences, viewing patterns, and taste profile based on all the clusters together. Highlight dominant preferences, viewing balance, and any insights about their TV watching identity..."
-}}
-
-Only return the JSON, nothing else."""
-
-        # System message for the clustering prompt
-        system_message = "You are a TV show analysis expert. Your task is to identify meaningful patterns in a user's TV viewing history. Focus on extracting distinct taste clusters that represent different aspects of their preferences. Each cluster should capture a unique facet of their viewing identity with thoughtful analysis."
+        # Get the clustering prompt from PromptEngineering
+        prompt_data = self.prompt_engineering.format_clustering_prompt(
+            watched_data=watched_data,
+            min_shows_per_cluster=min_shows_per_cluster,
+            max_clusters=max_clusters
+        )
         
         try:
             # Use LLM service to generate taste clusters
             clustering_response = self.llm_service.generate_json(
-                prompt=prompt,
-                system_message=system_message,
+                prompt=prompt_data["prompt"],
+                system_message=prompt_data["system_message"],
                 fallback_response={"clusters": [], "profile_summary": "Unable to generate profile"}
             )
+            
+            # Debug log the full response when troubleshooting
+            logger.debug(f"Received clustering response type: {type(clustering_response)}")
+            logger.debug(f"Response keys: {clustering_response.keys() if isinstance(clustering_response, dict) else 'not a dict'}")
             
             # Check if we have valid clusters
             clusters = clustering_response.get('clusters', [])
             if not clusters:
                 logger.error("OpenAI did not return any clusters")
-                return {"clusters": [], "profile_summary": "Unable to generate profile"}
+                logger.error(f"Full response from OpenAI: {clustering_response}")
+                
+                # Instead of returning an empty result, use the fallback clustering
+                logger.info("Using fallback clustering instead")
+                shows_data = self._prepare_shows_for_clustering(shows)
+                fallback_clusters = self._generate_fallback_clusters(shows_data)
+                return {
+                    "clusters": fallback_clusters,
+                    "profile_summary": "Generated using fallback clustering due to OpenAI API issue"
+                }
             
             # Filter out clusters with too few shows
             valid_clusters = [c for c in clusters if len(c.get('show_ids', [])) >= min_shows_per_cluster]
@@ -462,20 +509,27 @@ Only return the JSON, nothing else."""
             # If we don't have enough valid clusters and reclustering is allowed, try again with fewer minimums
             if len(valid_clusters) < 2 and reclustering_allowed:
                 logger.warning(f"Only found {len(valid_clusters)} valid clusters. Retrying with lower minimum...")
-                return self._cluster_shows(min_shows_per_cluster=2, max_clusters=max_clusters, reclustering_allowed=False)
+                return self._cluster_shows(shows, min_shows_per_cluster=2, max_clusters=max_clusters, reclustering_allowed=False)
             
             # Save clusters to cache for future use
             result = {
                 "clusters": valid_clusters,
                 "profile_summary": clustering_response.get('profile_summary', "")
             }
-            self._cache_clusters(result, min_shows_per_cluster, max_clusters)
+            self._cache_clusters(valid_clusters, cache_file, shows)
             
             return result
             
         except Exception as e:
             logger.error(f"Error clustering shows with OpenAI: {e}")
-            return {"clusters": [], "profile_summary": f"Error generating profile: {str(e)}"}
+            # Use fallback clustering on any error
+            logger.info("Using fallback clustering due to error")
+            shows_data = self._prepare_shows_for_clustering(shows)
+            fallback_clusters = self._generate_fallback_clusters(shows_data)
+            return {
+                "clusters": fallback_clusters,
+                "profile_summary": f"Generated using fallback clustering due to error: {str(e)}"
+            }
     
     def _generate_fallback_clusters(self, shows_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
@@ -521,7 +575,9 @@ Only return the JSON, nothing else."""
                 "genres": [genre],
                 "keywords": [genre.lower(), "entertainment", "television"],
                 "example_shows": shows_by_genre[genre][:5],  # Up to 5 example shows
-                "description": f"Shows in the {genre} genre that the user has watched."
+                "description": f"Shows in the {genre} genre that the user has watched.",
+                "explanation": f"These shows all belong to the {genre} category. The user appears to enjoy content in this genre, which typically features {genre.lower()} elements and themes.",
+                "viewing_experience": f"The {genre} experience provides the viewer with content that's characteristic of the genre, including its typical themes, narrative styles, and character archetypes."
             }
             
             clusters.append(cluster)
@@ -534,7 +590,9 @@ Only return the JSON, nothing else."""
                 "genres": ["Mixed"],
                 "keywords": ["entertainment", "television", "drama"],
                 "example_shows": all_titles,
-                "description": "Various shows the user has watched across different genres."
+                "description": "Various shows the user has watched across different genres.",
+                "explanation": "This user has a diverse taste in television without clear clustering patterns. Their watch history spans across different genres, themes, and styles.",
+                "viewing_experience": "The viewing experience is varied, suggesting the user enjoys sampling different types of content rather than focusing on specific genres or themes."
             })
         
         logger.info(f"Generated {len(clusters)} fallback clusters")
@@ -777,18 +835,31 @@ Only return the JSON, nothing else."""
         
         return "\n".join(output_parts)
     
-    def _get_cached_clusters(self, cache_file: str, shows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _get_cached_clusters(self, cache_file_or_param1, shows_or_param2=None) -> List[Dict[str, Any]]:
         """
         Get cached taste clusters if available.
         
+        This method can be called in two ways:
+        1. With a cache file path and shows list: _get_cached_clusters(cache_file, shows)
+        2. With min_shows_per_cluster and max_clusters: _get_cached_clusters(min_shows_per_cluster, max_clusters)
+        
         Args:
-            cache_file: Path to the cache file
-            shows: List of shows to calculate a hash/fingerprint for comparison
+            cache_file_or_param1: Either a path to the cache file or min_shows_per_cluster
+            shows_or_param2: Either a list of shows or max_clusters
             
         Returns:
             Cached clusters or None if cache doesn't exist or is invalid
         """
         try:
+            # Check if we're being called with min_shows_per_cluster and max_clusters instead of cache_file and shows
+            if isinstance(cache_file_or_param1, int):
+                logger.debug("_get_cached_clusters called with integer parameters, this usage is deprecated")
+                return None  # Return None for now to avoid issues with the old calling pattern
+            
+            # Normal operation with cache_file and shows
+            cache_file = cache_file_or_param1
+            shows = shows_or_param2
+            
             # Check if cache exists
             if not os.path.exists(cache_file):
                 return None
@@ -805,7 +876,23 @@ Only return the JSON, nothing else."""
                 
             # Check if the fingerprint matches
             if cache_data.get('fingerprint') == current_fingerprint:
-                return cache_data.get('clusters', [])
+                clusters = cache_data.get('clusters', [])
+                
+                # Validate that all clusters are dictionaries
+                validated_clusters = []
+                for cluster in clusters:
+                    if isinstance(cluster, dict):
+                        validated_clusters.append(cluster)
+                    else:
+                        # Log the invalid cluster format
+                        logger.warning(f"Skipping invalid cluster in cache: {type(cluster)}")
+                
+                # If we lost too many clusters during validation, return None to force regeneration
+                if len(validated_clusters) < len(clusters) * 0.7:  # More than 30% invalid
+                    logger.warning(f"Too many invalid clusters in cache ({len(clusters) - len(validated_clusters)}), regenerating")
+                    return None
+                
+                return validated_clusters
             else:
                 logger.info("Watch history has changed, regenerating taste clusters")
                 return None
@@ -824,6 +911,19 @@ Only return the JSON, nothing else."""
             shows: List of shows to calculate a fingerprint for
         """
         try:
+            # Validate that clusters is a list and contains only dictionaries
+            if not isinstance(clusters, list):
+                logger.warning(f"Cannot cache clusters: expected list, got {type(clusters)}")
+                return
+                
+            # Validate and filter clusters
+            valid_clusters = []
+            for cluster in clusters:
+                if isinstance(cluster, dict):
+                    valid_clusters.append(cluster)
+                else:
+                    logger.warning(f"Skipping invalid cluster while caching: {type(cluster)}")
+            
             # Create a simple fingerprint based on number of shows and titles
             fingerprint = None
             if shows:
@@ -832,7 +932,7 @@ Only return the JSON, nothing else."""
             
             # This will be used to check if the cache is still valid when watch history changes
             cache_data = {
-                'clusters': clusters,
+                'clusters': valid_clusters,
                 'timestamp': str(datetime.datetime.now()),
                 'fingerprint': fingerprint
             }
@@ -840,7 +940,7 @@ Only return the JSON, nothing else."""
             # Use utils.save_to_json instead of direct JSON operations
             save_to_json(cache_data, cache_file)
                 
-            logger.info(f"Cached {len(clusters)} taste clusters")
+            logger.info(f"Cached {len(valid_clusters)} taste clusters")
             
         except Exception as e:
             logger.error(f"Error caching taste clusters: {e}")

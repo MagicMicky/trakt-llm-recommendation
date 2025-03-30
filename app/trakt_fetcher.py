@@ -92,41 +92,73 @@ class TraktFetcher:
         
         return processed_shows
     
-    def get_episode_watch_history(self, show_id: str) -> List[Dict[str, Any]]:
+    def get_episode_watch_history(self, show_id: str, limit: int = 100) -> List[Dict[str, Any]]:
         """
         Fetch episode-level watch history for a specific show.
         
         Args:
             show_id: Trakt ID of the show
+            limit: Maximum number of episodes to fetch (default: 100)
             
         Returns:
             List of episode watch records with timestamps
         """
-        endpoint = f"/users/{self.username}/history/shows/{show_id}"
+        # Trakt API uses pagination with a default limit of 10, so we need to
+        # handle pagination to get a complete history
+        all_episode_history = []
+        page = 1
+        max_pages = (limit // 10) + 1  # Trakt API returns 10 items per page by default
         
-        episode_history = self._make_trakt_request(
-            endpoint=endpoint,
-            error_message=f"Error fetching episode history for show ID {show_id}",
-            empty_result=[]
-        )
-        
-        if episode_history:
-            logger.debug(f"Fetched {len(episode_history)} episode watch records for show ID {show_id}")
+        while page <= max_pages:
+            endpoint = f"/users/{self.username}/history/shows/{show_id}?page={page}&limit=100"
             
-        return episode_history
+            batch = self._make_trakt_request(
+                endpoint=endpoint,
+                error_message=f"Error fetching episode history for show ID {show_id} (page {page})",
+                empty_result=[]
+            )
+            
+            if not batch:
+                # No more results, break out of the loop
+                break
+                
+            all_episode_history.extend(batch)
+            
+            # If we received fewer items than requested, we've reached the end
+            if len(batch) < 100:
+                break
+                
+            # If we've reached our limit, stop fetching
+            if len(all_episode_history) >= limit:
+                all_episode_history = all_episode_history[:limit]
+                break
+                
+            # Move to next page
+            page += 1
+            
+        if all_episode_history:
+            logger.debug(f"Fetched {len(all_episode_history)} episode watch records for show ID {show_id}")
+            
+        return all_episode_history
     
-    def get_all_episode_history(self, show_ids: List[str], max_shows: int = 100) -> Dict[str, List[Dict[str, Any]]]:
+    def get_all_episode_history(self, 
+                             show_ids: List[str], 
+                             max_shows: int = 100, 
+                             episode_limit: int = 200) -> Dict[str, List[Dict[str, Any]]]:
         """
         Fetch episode watch history for multiple shows.
         
         Args:
             show_ids: List of Trakt show IDs
             max_shows: Maximum number of shows to fetch history for (0 means no limit)
+            episode_limit: Maximum number of episode records to fetch per show
             
         Returns:
             Dictionary mapping show IDs to their episode watch histories
         """
-        logger.info(f"Fetching episode watch history for {len(show_ids)} shows (max: {max_shows if max_shows > 0 else 'no limit'})")
+        logger.info(f"Fetching episode watch history for {len(show_ids)} shows " +
+                   f"(max shows: {max_shows if max_shows > 0 else 'no limit'}, " +
+                   f"max episodes per show: {episode_limit})")
         
         # Apply limit only if max_shows is greater than 0
         limited_show_ids = show_ids
@@ -137,9 +169,11 @@ class TraktFetcher:
         
         for show_id in limited_show_ids:
             try:
-                episode_history = self.get_episode_watch_history(show_id)
+                episode_history = self.get_episode_watch_history(show_id, limit=episode_limit)
                 if episode_history:
                     all_history[show_id] = episode_history
+                    if len(episode_history) >= episode_limit:
+                        logger.info(f"Hit episode limit ({episode_limit}) for show ID {show_id}")
             except Exception as e:
                 logger.error(f"Error fetching episode history for show ID {show_id}: {e}")
                 continue
