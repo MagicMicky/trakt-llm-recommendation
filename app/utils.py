@@ -55,21 +55,6 @@ def truncate_text(text, max_length=200):
         return text[:max_length].rstrip() + "..."
     return text
 
-def calculate_runtime_hours(minutes):
-    """Convert runtime from minutes to hours and minutes."""
-    if not minutes:
-        return "Unknown"
-    
-    hours = minutes // 60
-    remaining_minutes = minutes % 60
-    
-    if hours > 0 and remaining_minutes > 0:
-        return f"{hours}h {remaining_minutes}m"
-    elif hours > 0:
-        return f"{hours}h"
-    else:
-        return f"{remaining_minutes}m"
-
 def cache_recommendations(recommendations, cache_file='data/recommendations_cache.json'):
     """
     Save recommendations to a cache file.

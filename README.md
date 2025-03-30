@@ -117,12 +117,13 @@ tv-recommender/
 │   ├── trakt_fetcher.py         # Fetches watch history
 │   ├── tmdb_enricher.py         # Adds metadata to shows
 │   ├── profile_builder.py       # Builds taste profile from watch history
-│   ├── candidate_fetcher.py     # Gets trending + new shows
+│   ├── affinity_scorer.py       # Calculates affinity scores based on viewing behavior
 │   ├── recommender.py           # Uses LLM to select and explain shows
 │   ├── output_web.py            # Renders HTML 
 │   └── utils.py                 # Common helpers
 │
 └── templates/           # HTML templates for the output page
+└── static/              # Static assets for the web interface
 ```
 
 ## License

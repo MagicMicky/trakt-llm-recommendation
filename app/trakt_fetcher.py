@@ -70,29 +70,6 @@ class TraktFetcher:
             logger.error(f"Error fetching watched shows: {e}")
             raise
     
-    def get_show_details(self, show_id: str) -> Dict[str, Any]:
-        """
-        Fetch detailed information for a specific show.
-        
-        Args:
-            show_id: Trakt ID of the show
-            
-        Returns:
-            Detailed show information
-        """
-        endpoint = f"/shows/{show_id}?extended=full"
-        url = f"{self.BASE_URL}{endpoint}"
-        
-        try:
-            response = requests.get(url, headers=self.headers)
-            response.raise_for_status()
-            
-            return response.json()
-            
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Error fetching show details for ID {show_id}: {e}")
-            raise
-    
     def get_episode_watch_history(self, show_id: str) -> List[Dict[str, Any]]:
         """
         Fetch episode-level watch history for a specific show.
@@ -150,63 +127,6 @@ class TraktFetcher:
         
         logger.info(f"Successfully fetched episode history for {len(all_history)} shows")
         return all_history
-    
-    def get_show_progress(self, show_id: str) -> Dict[str, Any]:
-        """
-        Fetch progress information for a specific show.
-        
-        Args:
-            show_id: Trakt ID of the show
-            
-        Returns:
-            Show progress information
-        """
-        endpoint = f"/users/{self.username}/progress/watched/shows/{show_id}"
-        url = f"{self.BASE_URL}{endpoint}"
-        
-        try:
-            response = requests.get(url, headers=self.headers)
-            response.raise_for_status()
-            
-            progress_data = response.json()
-            logger.debug(f"Fetched progress data for show ID {show_id}")
-            
-            return progress_data
-            
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Error fetching progress for show ID {show_id}: {e}")
-            return {}
-    
-    def get_all_show_progress(self, show_ids: List[str], max_shows: int = 100) -> Dict[str, Dict[str, Any]]:
-        """
-        Fetch progress information for multiple shows.
-        
-        Args:
-            show_ids: List of Trakt show IDs
-            max_shows: Maximum number of shows to fetch progress for
-            
-        Returns:
-            Dictionary mapping show IDs to their progress data
-        """
-        logger.info(f"Fetching progress data for {len(show_ids)} shows (max: {max_shows})")
-        
-        # Limit to max_shows
-        if max_shows > 0:
-            show_ids = show_ids[:max_shows]
-        
-        all_progress = {}
-        
-        for show_id in show_ids:
-            try:
-                progress_data = self.get_show_progress(show_id)
-                if progress_data:
-                    all_progress[show_id] = progress_data
-            except Exception as e:
-                logger.error(f"Error fetching progress for show ID {show_id}: {e}")
-                continue
-        
-        logger.info(f"Successfully fetched progress data for {len(all_progress)} shows")
-        return all_progress
     
     def get_ratings(self) -> List[Dict[str, Any]]:
         """

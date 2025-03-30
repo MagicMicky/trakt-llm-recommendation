@@ -971,13 +971,13 @@ Only provide the JSON output, nothing else. Ensure it's valid JSON without any c
     
     def _analyze_viewing_patterns(self, shows: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
-        Analyze user viewing patterns based on affinity scores and watch data.
+        Analyze viewing patterns to understand user preferences better.
         
         Args:
-            shows: List of shows with affinity data
+            shows: List of watched shows with metadata
             
         Returns:
-            Dictionary of viewing pattern insights
+            Dictionary with viewing pattern insights
         """
         viewing_patterns = {
             'completion_rate': 0.0,
@@ -1059,50 +1059,4 @@ Only provide the JSON output, nothing else. Ensure it's valid JSON without any c
         if anthology_count / len(shows_with_affinity) > 0.2 if shows_with_affinity else False:
             viewing_patterns['format_preferences'].append('anthology')
         
-        return viewing_patterns
-    
-    def generate_profile_summary(self, profile: Dict[str, Any]) -> str:
-        """
-        Generate a human-readable summary of the user taste profile.
-        
-        Args:
-            profile: User taste profile
-            
-        Returns:
-            Formatted summary string
-        """
-        summary = []
-        
-        # General stats
-        summary.append(f"You've watched {profile['total_shows_watched']} TV shows.")
-        
-        # Genres
-        if profile['genres']['top']:
-            favorite_genres = ", ".join([genre['name'] for genre in profile['genres']['top'][:3]])
-            summary.append(f"Your favorite genres are {favorite_genres}.")
-        
-        # Decades
-        if profile['decades']['favorite']:
-            summary.append(f"You seem to enjoy shows from the {profile['decades']['favorite']}s.")
-        
-        # Networks
-        if profile['networks']['top']:
-            favorite_networks = ", ".join([network['name'] for network in profile['networks']['top'][:2]])
-            summary.append(f"You watch a lot of content from {favorite_networks}.")
-        
-        # Keywords/themes
-        if profile['keywords']['top']:
-            themes = ", ".join([keyword['name'] for keyword in profile['keywords']['top'][:5]])
-            summary.append(f"Themes common in your viewing: {themes}.")
-        
-        # Creators
-        if profile['creators']['top']:
-            creators = ", ".join([creator['name'] for creator in profile['creators']['top'][:2]])
-            summary.append(f"You enjoy shows from creators like {creators}.")
-        
-        # Actors
-        if profile['actors']['top']:
-            actors = ", ".join([actor['name'] for actor in profile['actors']['top'][:3]])
-            summary.append(f"You frequently watch shows featuring {actors}.")
-        
-        return "\n".join(summary) 
+        return viewing_patterns 
